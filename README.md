@@ -1,36 +1,80 @@
-This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
+# OpenClaw Frontend Workspace
 
-## Getting Started
+Frontend cho luong sale workflow:
 
-First, run the development server:
+- Config channel (Mail/Zalo/WhatsApp)
+- Marking message vao project
+- Dashboard project + summary/todolist
+- Chat voi AI agent theo tung project
 
-```bash
-npm run dev
-# or
-yarn dev
-# or
-pnpm dev
-# or
-bun dev
-```
+Luu y:
 
-Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
+- Man chat voi agent chua bat trong phase hien tai
+- FE co che do mock de dev song song backend
 
-You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
+## Local Development
 
-This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
+1. Cai package:
 
-## Learn More
+	npm install
 
-To learn more about Next.js, take a look at the following resources:
+2. Tao file env (copy tu .env.example) va chinh theo nhu cau.
 
-- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js features and API.
-- [Learn Next.js](https://nextjs.org/learn) - an interactive Next.js tutorial.
+3. Chay dev server:
 
-You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js) - your feedback and contributions are welcome!
+	npm run dev
 
-## Deploy on Vercel
+4. Truy cap:
 
-The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
+	http://localhost:3000
 
-Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
+## Environment Variables
+
+- NEXT_PUBLIC_API_BASE_URL
+  - Base URL cua backend (vi du: http://localhost:8080/api)
+- NEXT_PUBLIC_USE_MOCK
+  - true: dung mock data
+  - false: goi backend that, neu loi se fallback mock cho GET
+- NEXT_PUBLIC_CHAT_BRIDGE_WS_URL
+	- WebSocket URL cho chat-bridge (vi du: ws://localhost:3001/ws)
+- NEXT_PUBLIC_SALE_ID
+	- Session ID cua sale tren openclaw bridge (vi du: sale_sang)
+- NEXT_PUBLIC_SALE_NAME
+	- Ten hien thi tren chat bridge
+
+## Scripts
+
+- npm run dev
+- npm run lint
+- npm run build
+- npm run start
+
+## Main Routes
+
+- /login
+- /projects
+- /channels
+- /marking
+- /chat
+
+## Current FE Scope
+
+- Responsive layout cho desktop/mobile
+- Loading skeleton va app-level error boundary
+- Validation co ban cho channel config
+- Multi-select + drag-drop cho marking
+- Chat UI local mode (mock), gui nhan tin va auto-reply agent
+
+## Chat Bridge Integration
+
+FE chat da ho tro 2 che do:
+
+- Bridge mode: neu co NEXT_PUBLIC_CHAT_BRIDGE_WS_URL
+- Local mode: fallback mock neu khong co bridge hoac bridge mat ket noi
+
+Flow bridge mode:
+
+1. FE mo WebSocket den chat-bridge
+2. FE gui message voi type=chat
+3. FE nhan stream token tu bridge va render realtime
+4. FE nhan done de ket thuc luot tra loi
