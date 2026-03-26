@@ -136,6 +136,20 @@ export interface PlatformMessage {
   };
 }
 
+export interface InboxConversationSummary {
+  id: string;
+  channelId?: string;
+  provider?: string;
+  name: string;
+  avatarUrl?: string;
+  externalId?: string;
+  type?: string;
+  isIgnored?: boolean;
+  createdAt?: string;
+  updatedAt?: string;
+  lastMessageAt?: string;
+}
+
 export interface BlacklistEntry {
   id: string;
   channel: MessageChannel;

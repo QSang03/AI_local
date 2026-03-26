@@ -48,6 +48,9 @@ export function ProjectChatPanel({ sessions }: ProjectChatPanelProps) {
   const [draft, setDraft] = useState("");
   const [sending, setSending] = useState(false);
   const [typingBySession, setTypingBySession] = useState<Record<string, boolean>>({});
+  // Accumulates streaming content until {"type":"done"} is received
+  const [streamingBySession, setStreamingBySession] = useState<Record<string, string>>({});
+  const streamingBySessionRef = useRef<Record<string, string>>({});
   const [statusMessage, setStatusMessage] = useState("Dang ket noi AI server...");
   const [isRoomsOpen, setIsRoomsOpen] = useState(false);
   const messageViewportRef = useRef<HTMLDivElement | null>(null);
@@ -188,7 +191,26 @@ export function ProjectChatPanel({ sessions }: ProjectChatPanelProps) {
           return;
         }
 
-        if (incoming.type === "stream" || incoming.type === "system" || incoming.type === "message") {
+        if (incoming.type === "stream") {
+          // Accumulate stream chunks into a buffer without creating a new message yet
+          const chunk = incoming.content ?? incoming.message ?? "";
+          if (chunk) {
+            setStreamingBySession((prev) => {
+              const next = {
+                ...prev,
+                [targetSessionId]: (prev[targetSessionId] ?? "") + chunk,
+              };
+              streamingBySessionRef.current = next;
+              return next;
+            });
+          }
+          setTypingBySession((prev) => ({ ...prev, [targetSessionId]: false }));
+          setSending(false);
+          return;
+        }
+
+        if (incoming.type === "system" || incoming.type === "message") {
+          // Non-streaming messages are committed directly as separate messages
           const content = incoming.content ?? incoming.message ?? "";
           if (!content) return;
           setMessagesBySession((prev) => ({
@@ -205,10 +227,39 @@ export function ProjectChatPanel({ sessions }: ProjectChatPanelProps) {
           }));
           setTypingBySession((prev) => ({ ...prev, [targetSessionId]: false }));
           setSending(false);
+          return;
         }
 
         if (incoming.type === "done") {
-          // stop showing typing animation when done
+          // Finalize buffered stream exactly once; avoid side-effects inside state updaters.
+          const bufferedContent = streamingBySessionRef.current[targetSessionId] ?? "";
+          if (targetSessionId in streamingBySessionRef.current) {
+            const nextStreamMap = { ...streamingBySessionRef.current };
+            delete nextStreamMap[targetSessionId];
+            streamingBySessionRef.current = nextStreamMap;
+          }
+
+          setStreamingBySession((prev) => {
+            if (!(targetSessionId in prev)) return prev;
+            const next = { ...prev };
+            delete next[targetSessionId];
+            return next;
+          });
+
+          if (bufferedContent.trim()) {
+            setMessagesBySession((msgs) => ({
+              ...msgs,
+              [targetSessionId]: [
+                ...(msgs[targetSessionId] ?? []),
+                {
+                  id: `ws-done-${Date.now()}-${Math.floor(Math.random() * 1000)}`,
+                  role: incoming.role ?? "assistant",
+                  content: bufferedContent,
+                  createdAt: incoming.created_at ?? new Date().toISOString(),
+                },
+              ],
+            }));
+          }
           setTypingBySession((prev) => ({ ...prev, [targetSessionId]: false }));
           setSending(false);
         }
@@ -410,21 +461,34 @@ export function ProjectChatPanel({ sessions }: ProjectChatPanelProps) {
                     </div>
                   );
                 })}
-                {typingBySession[selectedSessionId] ? (
-                  <div className={`flex items-end gap-2 justify-start`}>
+
+                {/* Live streaming bubble: shows accumulating content before "done" is received */}
+                {streamingBySession[selectedSessionId] ? (
+                  <div className="flex items-end gap-2 justify-start">
                     <div className="flex h-8 w-8 items-center justify-center rounded-full bg-teal-100 text-xs font-bold text-teal-700">
                       <MessageCircle className="h-4 w-4" />
                     </div>
-
-                    <div className={`max-w-[72%] order-2`}>
-                      <article className={`px-4 py-2 text-sm rounded-[18px_18px_18px_4px] border border-slate-200 bg-white text-slate-800 shadow-sm`}>
+                    <div className="max-w-[72%] order-2">
+                      <article className="px-4 py-2 text-sm rounded-[18px_18px_18px_4px] border border-slate-200 bg-white text-slate-800 shadow-sm">
+                        {markdownContent(streamingBySession[selectedSessionId]!, false)}
+                      </article>
+                      <p className="mt-1 text-xs text-slate-400 text-left">Assistant • đang nhập...</p>
+                    </div>
+                  </div>
+                ) : typingBySession[selectedSessionId] ? (
+                  <div className="flex items-end gap-2 justify-start">
+                    <div className="flex h-8 w-8 items-center justify-center rounded-full bg-teal-100 text-xs font-bold text-teal-700">
+                      <MessageCircle className="h-4 w-4" />
+                    </div>
+                    <div className="max-w-[72%] order-2">
+                      <article className="px-4 py-2 text-sm rounded-[18px_18px_18px_4px] border border-slate-200 bg-white text-slate-800 shadow-sm">
                         <span className="inline-flex items-center gap-1">
                           <span className="inline-block h-2 w-2 rounded-full bg-slate-400 animate-bounce" style={{ animationDelay: "0s" }} />
                           <span className="inline-block h-2 w-2 rounded-full bg-slate-400 animate-bounce" style={{ animationDelay: "0.12s" }} />
                           <span className="inline-block h-2 w-2 rounded-full bg-slate-400 animate-bounce" style={{ animationDelay: "0.24s" }} />
                         </span>
                       </article>
-                      <p className={`mt-1 text-xs text-slate-400 text-left`}>Assistant • {formatTimeLabel(new Date().toISOString())}</p>
+                      <p className="mt-1 text-xs text-slate-400 text-left">Assistant • {formatTimeLabel(new Date().toISOString())}</p>
                     </div>
                   </div>
                 ) : null}

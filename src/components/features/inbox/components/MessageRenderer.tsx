@@ -151,11 +151,16 @@ function sanitizeEmailHtml(rawHtml: string): string {
 
     doc.body.querySelectorAll('table').forEach(tbl => {
       // Make tables scrollable instead of expanding the layout
-      tbl.setAttribute('style', 'max-width:100% !important; display:block; overflow:auto;');
+      tbl.setAttribute('style', 'max-width:100% !important; display:block; overflow-x:auto;');
     });
 
     // Prepend a small safe CSS to further enforce constraints
-    const safetyCss = `\n<style> img{max-width:100% !important; height:auto !important; display:block; } table{max-width:100% !important; display:block; overflow:auto;} </style>\n`;
+    const safetyCss = `\n<style>
+      img{max-width:100% !important; height:auto !important; display:block;}
+      table{max-width:100% !important; display:block; overflow-x:auto;}
+      *{max-width:100%; box-sizing:border-box; overflow-wrap:anywhere; word-break:break-word;}
+      pre,code{white-space:pre-wrap; overflow-wrap:anywhere; word-break:break-word;}
+    </style>\n`;
 
     // Lấy inner body hoặc toàn bộ html nếu body empty
     const bodyHtml = doc.body?.innerHTML?.trim() || doc.documentElement?.innerHTML?.trim() || "";
@@ -170,7 +175,10 @@ export function MessageRenderer({ content, bodyHtml, isExpanded, onToggleExpand 
   if (bodyHtml && bodyHtml.trim()) {
     const safeHtml = sanitizeEmailHtml(bodyHtml);
     return (
-      <div className="prose max-w-full text-sm text-slate-700 overflow-hidden" dangerouslySetInnerHTML={{ __html: safeHtml }} />
+      <div
+        className="prose max-w-full text-sm text-slate-700 overflow-hidden break-words [overflow-wrap:anywhere] [&_*]:max-w-full"
+        dangerouslySetInnerHTML={{ __html: safeHtml }}
+      />
     );
   }
 
@@ -186,7 +194,7 @@ export function MessageRenderer({ content, bodyHtml, isExpanded, onToggleExpand 
       
       return (
         <div className="space-y-2">
-          <div className="text-sm text-slate-800 font-medium whitespace-pre-wrap">
+          <div className="text-sm text-slate-800 font-medium whitespace-pre-wrap break-words [overflow-wrap:anywhere]">
             {title}
           </div>
           {attachment && (
@@ -207,9 +215,9 @@ export function MessageRenderer({ content, bodyHtml, isExpanded, onToggleExpand 
   // URL
   if (content.startsWith("http://") || content.startsWith("https://")) {
     return (
-      <a href={content} target="_blank" rel="noreferrer" className="inline-flex items-center gap-1 py-1 px-3 bg-white border border-slate-200 rounded-full text-sm text-sky-600 hover:bg-slate-50 transition shadow-sm">
+      <a href={content} target="_blank" rel="noreferrer" className="inline-flex max-w-full min-w-0 items-center gap-1 py-1 px-3 bg-white border border-slate-200 rounded-full text-sm text-sky-600 hover:bg-slate-50 transition shadow-sm">
         <ExternalLink size={14} />
-        <span className="truncate max-w-[200px]">{content}</span>
+        <span className="min-w-0 break-words [overflow-wrap:anywhere]">{content}</span>
       </a>
     );
   }
@@ -243,11 +251,11 @@ export function MessageRenderer({ content, bodyHtml, isExpanded, onToggleExpand 
 
   if (hasTags) {
     return (
-      <div className="space-y-2 flex flex-col items-start">
+      <div className="space-y-2 flex flex-col items-start min-w-0 max-w-full">
         {parsedLines.map((p, i) => {
           if (!p.isTag) {
             return (
-              <div key={i} className="text-sm text-slate-700 whitespace-pre-wrap break-words leading-relaxed">
+              <div key={i} className="text-sm text-slate-700 whitespace-pre-wrap break-words [overflow-wrap:anywhere] leading-relaxed">
                 {p.text}
               </div>
             );
@@ -264,8 +272,8 @@ export function MessageRenderer({ content, bodyHtml, isExpanded, onToggleExpand 
   const displayContent = (!isExpanded && isLong) ? content.slice(0, 300) + "..." : content;
 
   return (
-    <div className="space-y-1">
-      <div className="text-sm text-slate-700 whitespace-pre-wrap break-words leading-relaxed">
+    <div className="space-y-1 min-w-0 max-w-full">
+      <div className="text-sm text-slate-700 whitespace-pre-wrap break-words [overflow-wrap:anywhere] leading-relaxed">
         {displayContent}
       </div>
       {isLong && onToggleExpand && (

@@ -469,10 +469,11 @@ export function ChannelConfigForm({ configs }: ChannelConfigFormProps) {
     setSaving(false);
   }
 
-  async function handleStartZaloLogin() {
+  async function handleStartZaloLogin(channelId?: number) {
     setZaloError(null);
 
-    const parsedId = Number.parseInt(zaloChannelId, 10);
+    const parsedId =
+      typeof channelId === "number" ? channelId : Number.parseInt(zaloChannelId, 10);
     if (!Number.isInteger(parsedId) || parsedId <= 0) {
       setZaloError("Channel ID Zalo khong hop le.");
       return;
@@ -496,10 +497,11 @@ export function ChannelConfigForm({ configs }: ChannelConfigFormProps) {
     connectZaloSocket(resolveZaloWsUrl(result.data.ws_url));
   }
 
-  async function handleStartWhatsAppLogin() {
+  async function handleStartWhatsAppLogin(channelId?: number) {
     setWhatsappError(null);
 
-    const parsedId = Number.parseInt(whatsappChannelId, 10);
+    const parsedId =
+      typeof channelId === "number" ? channelId : Number.parseInt(whatsappChannelId, 10);
     if (!Number.isInteger(parsedId) || parsedId <= 0) {
       setWhatsappError("Channel ID WhatsApp khong hop le.");
       return;
@@ -521,6 +523,29 @@ export function ChannelConfigForm({ configs }: ChannelConfigFormProps) {
 
     setWhatsappStatus("Dang ket noi toi provider...");
     connectWhatsAppSocket(resolveWhatsAppWsUrl(result.data.ws_url));
+  }
+
+  function isZaloConfig(config: ChannelConfig) {
+    return String(config.provider).toLowerCase().includes("zalo");
+  }
+
+  function isWhatsAppConfig(config: ChannelConfig) {
+    return String(config.provider).toLowerCase().includes("whatsapp");
+  }
+
+  async function handleLoginFromList(config: ChannelConfig) {
+    if (isZaloConfig(config)) {
+      setProvider(ZALO_PROVIDER);
+      setZaloChannelId(String(config.id));
+      await handleStartZaloLogin(config.id);
+      return;
+    }
+
+    if (isWhatsAppConfig(config)) {
+      setProvider(WHATSAPP_PROVIDER);
+      setWhatsappChannelId(String(config.id));
+      await handleStartWhatsAppLogin(config.id);
+    }
   }
 
   async function handleDelete(id: number) {
@@ -831,23 +856,45 @@ export function ChannelConfigForm({ configs }: ChannelConfigFormProps) {
               >
                 <p className="font-semibold text-slate-800">#{config.id} - {String(config.provider).toUpperCase()}</p>
                 <p className="text-slate-600">Status: {config.status}</p>
-                {String(config.provider).toLowerCase() === "email" ? (
-                  <p className="mt-1 text-xs text-slate-500">
-                    Server: {auth.server} | TLS: {auth.useTls ? "true" : "false"}
-                  </p>
-                ) : null}
-                <p className="mt-1 text-xs text-slate-500">Created: {config.created_at}</p>
-                <button
-                  type="button"
-                  onClick={() => handleDelete(config.id)}
-                  disabled={deletingId === config.id}
-                  className="mt-2 inline-flex rounded-lg border border-rose-200 bg-white px-3 py-1 text-xs font-semibold text-rose-700 transition hover:bg-rose-50 disabled:opacity-60"
-                >
-                  {deletingId === config.id ? "Dang xoa..." : "Xoa"}
-                </button>
-              </li>
-            );
-          })}
+                 {String(config.provider).toLowerCase() === "email" ? (
+                   <p className="mt-1 text-xs text-slate-500">
+                     Server: {auth.server} | TLS: {auth.useTls ? "true" : "false"}
+                   </p>
+                 ) : null}
+                 <p className="mt-1 text-xs text-slate-500">Created: {config.created_at}</p>
+                 <div className="mt-2 flex flex-wrap items-center gap-2">
+                   {isZaloConfig(config) ? (
+                     <button
+                       type="button"
+                       onClick={() => void handleLoginFromList(config)}
+                       disabled={startingZaloLogin}
+                       className="inline-flex rounded-lg border border-blue-200 bg-white px-3 py-1 text-xs font-semibold text-blue-700 transition hover:bg-blue-50 disabled:opacity-60"
+                     >
+                       {startingZaloLogin && Number(zaloChannelId) === config.id ? "Dang Login..." : "Login"}
+                     </button>
+                   ) : null}
+                   {isWhatsAppConfig(config) ? (
+                     <button
+                       type="button"
+                       onClick={() => void handleLoginFromList(config)}
+                       disabled={startingWhatsappLogin}
+                       className="inline-flex rounded-lg border border-blue-200 bg-white px-3 py-1 text-xs font-semibold text-blue-700 transition hover:bg-blue-50 disabled:opacity-60"
+                     >
+                       {startingWhatsappLogin && Number(whatsappChannelId) === config.id ? "Dang Login..." : "Login"}
+                     </button>
+                   ) : null}
+                   <button
+                     type="button"
+                     onClick={() => handleDelete(config.id)}
+                     disabled={deletingId === config.id}
+                     className="inline-flex rounded-lg border border-rose-200 bg-white px-3 py-1 text-xs font-semibold text-rose-700 transition hover:bg-rose-50 disabled:opacity-60"
+                   >
+                     {deletingId === config.id ? "Dang xoa..." : "Xoa"}
+                   </button>
+                 </div>
+               </li>
+             );
+           })}
         </ul>
       </section>
     </div>

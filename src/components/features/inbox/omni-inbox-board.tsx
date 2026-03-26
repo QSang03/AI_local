@@ -4,13 +4,11 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { AnimatePresence, motion } from "framer-motion";
 import { formatDistanceToNow } from "date-fns";
 import { vi } from "date-fns/locale";
-import { Search, Info, Mail, Phone, MessageCircle, X, ChevronLeft, ChevronRight, Ban, User, MoreVertical, ThumbsUp } from "lucide-react";
-import { getOmniInboxData, addBlacklistEntry, removeBlacklistEntry, saveMessageProjectMapping, ignoreConversation } from "@/lib/api";
-import { BlacklistEntry, MessageChannel, PlatformMessage, Project } from "@/types/domain";
+import { Search, Mail, Phone, MessageCircle, X, Ban, User, MoreVertical, ChevronRight } from "lucide-react";
+import { getInboxConversations, getInboxMessages, ignoreConversation, saveMessageProjectMapping } from "@/lib/api";
+import { InboxConversationSummary, MessageChannel, PlatformMessage, Project } from "@/types/domain";
 
 import Toast from "@/components/ui/Toast";
-import Loader from "@/components/ui/Loader";
-
 import { MessageRenderer } from "./components/MessageRenderer";
 import { MappingPanel } from "./components/MappingPanel";
 import { useMessageSelection } from "./hooks/useMessageSelection";
@@ -18,51 +16,19 @@ import { useMessageSelection } from "./hooks/useMessageSelection";
 type ChannelFilter = "all" | MessageChannel;
 
 interface OmniInboxBoardProps {
-  initialMessages: PlatformMessage[];
-  initialBlacklist: BlacklistEntry[];
   projects: Project[];
+  initialConversations: InboxConversationSummary[];
+  initialMessagesByConversation?: Record<string, PlatformMessage[]>;
+  initialSelectedConversationId?: string | null;
 }
 
-interface InboxConversation {
-  id: string;
-  threadTitle: string;
-  channel: MessageChannel;
-  senderId: string;
-  senderDisplay: string;
-  messageIds: string[];
-  messageCount: number;
-  latestReceivedAt: string;
-  latestSubject: string;
-  latestSnippet: string;
-  latestContent: string;
-  projectIds: string[];
-  latestExternalId?: string | null;
-  latestRawChannelProvider?: string | null;
-}
+const PAGE_SIZE = 20;
 
-interface MappingUndoEntry {
-  id: string;
-  messageIds: string[];
-  toProjectIds: string[];
-  previousByMessage: Record<string, string[]>;
-  createdAt: number;
-}
-
-// Colors configuration for badges and styling
 const CHANNEL_COLORS = {
-  zalo: { bg: "bg-emerald-100", text: "text-emerald-700", border: "border-emerald-200", label: "ZALO", icon: MessageCircle },
-  email: { bg: "bg-amber-100", text: "text-amber-700", border: "border-amber-200", label: "EMAIL", icon: Mail },
-  whatsapp: { bg: "bg-green-100", text: "text-green-700", border: "border-green-200", label: "WA", icon: Phone },
+  zalo: { bg: "bg-emerald-100", text: "text-emerald-700", label: "ZALO", icon: MessageCircle },
+  email: { bg: "bg-amber-100", text: "text-amber-700", label: "EMAIL", icon: Mail },
+  whatsapp: { bg: "bg-green-100", text: "text-green-700", label: "WA", icon: Phone },
 } as const;
-
-function mapProviderToChannel(provider?: string | null): MessageChannel {
-  if (!provider) return "email";
-  const p = provider.toLowerCase();
-  if (p.includes("zalo")) return "zalo";
-  if (p.includes("whatsapp")) return "whatsapp";
-  if (p.includes("email")) return "email";
-  return "email";
-}
 
 function timeAgo(dateStr: string) {
   try {
@@ -74,415 +40,300 @@ function timeAgo(dateStr: string) {
   }
 }
 
-export function OmniInboxBoard({ initialMessages, initialBlacklist, projects }: OmniInboxBoardProps) {
-  const [messages, setMessages] = useState<PlatformMessage[]>(initialMessages ?? []);
-  const [blacklist, setBlacklist] = useState<BlacklistEntry[]>(initialBlacklist ?? []);
+export function OmniInboxBoard({
+  projects,
+  initialConversations,
+  initialMessagesByConversation,
+  initialSelectedConversationId,
+}: OmniInboxBoardProps) {
   const [remoteLoading, setRemoteLoading] = useState(false);
-  
-  // Initialize channelFilter from localStorage if available
-  const [channelFilter, setChannelFilter] = useState<ChannelFilter>(() => {
-    if (typeof window !== 'undefined') {
-      const saved = localStorage.getItem('omniInboxChannelFilter');
-      if (saved === 'email' || saved === 'zalo' || saved === 'whatsapp' || saved === 'all') {
-        return saved as ChannelFilter;
-      }
-    }
-    return "email";
-  });
-  
+  const [messagesLoading, setMessagesLoading] = useState(false);
+  const [channelFilter, setChannelFilter] = useState<ChannelFilter>("email");
   const [searchQuery, setSearchQuery] = useState("");
   const [hideBlacklisted, setHideBlacklisted] = useState(true);
   const [ignoredConversations, setIgnoredConversations] = useState<Set<string>>(new Set());
-  
-  const [selectedConversationId, setSelectedConversationId] = useState<string | null>(null);
-  
+  const [selectedConversationId, setSelectedConversationId] = useState<string | null>(initialSelectedConversationId ?? null);
   const [isMappingOpen, setIsMappingOpen] = useState(false);
   const [saving, setSaving] = useState(false);
   const [toastMessage, setToastMessage] = useState<string | null>(null);
-  
-  const [undoStack, setUndoStack] = useState<MappingUndoEntry[]>([]);
-  const [redoStack, setRedoStack] = useState<MappingUndoEntry[]>([]);
   const [localProjects, setLocalProjects] = useState<Project[]>(projects ?? []);
-
   const [expandedMsgIds, setExpandedMsgIds] = useState<string[]>([]);
-  
-  const [listPage, setListPage] = useState(1);
-  const [conversationPageSize] = useState(50);
 
-  const [apiPage, setApiPage] = useState(1);
-  const [apiPageSize] = useState(50);
-  const [apiTotal, setApiTotal] = useState<number | null>(null);
-  const [apiHasMore, setApiHasMore] = useState(false);
+  const [conversations, setConversations] = useState<InboxConversationSummary[]>(initialConversations ?? []);
+  const [conversationOffset, setConversationOffset] = useState((initialConversations ?? []).length);
+  const [conversationHasMore, setConversationHasMore] = useState((initialConversations ?? []).length === PAGE_SIZE);
+
+  const [messagesByConversation, setMessagesByConversation] = useState<Record<string, PlatformMessage[]>>(
+    initialMessagesByConversation ?? {},
+  );
+  const [messageMetaByConversation, setMessageMetaByConversation] = useState<
+    Record<string, { offset: number; hasMore: boolean; loading: boolean }>
+  >(() => {
+    const seed: Record<string, { offset: number; hasMore: boolean; loading: boolean }> = {};
+    if (initialMessagesByConversation) {
+      for (const [conversationId, list] of Object.entries(initialMessagesByConversation)) {
+        seed[conversationId] = { offset: list.length, hasMore: list.length === PAGE_SIZE, loading: false };
+      }
+    }
+    return seed;
+  });
 
   const { selectedIds, selectedCount, toggleSelection, selectAll, clearAll } = useMessageSelection();
   const convoListRef = useRef<HTMLDivElement | null>(null);
-  const messagesRef = useRef<PlatformMessage[]>(initialMessages ?? []);
-  const sentinelRef = useRef<HTMLDivElement | null>(null);
-  
-  // Track which apiPage numbers are currently being fetched to avoid duplicate calls
-  const loadingPagesRef = useRef<Set<number>>(new Set());
-  const apiPageRef = useRef<number>(apiPage);
-  useEffect(() => { apiPageRef.current = apiPage; }, [apiPage]);
-
-  const consecutiveEmptyLoadsRef = useRef<number>(0);
+  const convoSentinelRef = useRef<HTMLDivElement | null>(null);
+  const messageListRef = useRef<HTMLDivElement | null>(null);
+  const messageTopSentinelRef = useRef<HTMLDivElement | null>(null);
+  const conversationFetchesRef = useRef<Set<string>>(new Set());
+  const messageFetchesRef = useRef<Set<string>>(new Set());
+  const initializedProviderRef = useRef<string | undefined>(undefined);
+  const usedInitialSeedRef = useRef(false);
 
   useEffect(() => {
-    messagesRef.current = messages;
-  }, [messages]);
+    if (typeof window === "undefined") return;
+    const saved = localStorage.getItem("omniInboxChannelFilter");
+    if (saved === "email" || saved === "zalo" || saved === "whatsapp" || saved === "all") {
+      setChannelFilter(saved as ChannelFilter);
+    }
+  }, []);
 
-  const blacklistedSet = useMemo(() => new Set(blacklist.map((e) => `${e.channel}:${e.senderId}`)), [blacklist]);
+  useEffect(() => {
+    if (typeof window !== "undefined") {
+      localStorage.setItem("omniInboxChannelFilter", channelFilter);
+    }
+  }, [channelFilter]);
 
-  const filteredMessages = useMemo(() => {
-    return messages.filter((m) => {
-      const byChannel = channelFilter === "all" || m.channel === channelFilter;
-      const byQuery = searchQuery.trim() === "" ||
-        m.subject.toLowerCase().includes(searchQuery.toLowerCase()) ||
-        m.senderDisplay.toLowerCase().includes(searchQuery.toLowerCase()) ||
-        m.snippet.toLowerCase().includes(searchQuery.toLowerCase());
-      const isBlacklisted = blacklistedSet.has(`${m.channel}:${m.senderId}`) || ignoredConversations.has(m.conversationId);
-      const byBlacklist = hideBlacklisted ? !isBlacklisted : true;
-      return byChannel && byQuery && byBlacklist;
-    });
-  }, [messages, channelFilter, searchQuery, blacklistedSet, hideBlacklisted, ignoredConversations]);
-
-  const providerParam = useMemo<undefined | string>(() => {
+  const providerParam = useMemo(() => {
     if (channelFilter === "all") return undefined;
-    if (channelFilter === "email") return "email";
     if (channelFilter === "zalo") return "zalo_personal";
     if (channelFilter === "whatsapp") return "whatsapp_personal";
-    return undefined;
+    return "email";
   }, [channelFilter]);
 
-  const loadInboxPage = useCallback(async (page: number) => {
-    // Avoid duplicate fetches for the same page
-    if (loadingPagesRef.current.has(page)) {
-      try { console.debug && console.debug('[OmniInbox] skip duplicate page fetch', page); } catch {}
-      return;
-    }
-    loadingPagesRef.current.add(page);
-    setRemoteLoading(true);
-
-    try {
-      const offset = (page - 1) * apiPageSize;
-      const data = await getOmniInboxData({
-        provider: providerParam,
-        limit: apiPageSize,
-        offset,
-        include_ignored: false,
-      });
-
-      const nextMessages = data.messages ?? [];
-      // Debug logging to help investigate missing/incrementing messages
-      // Check: page, offset, number of messages returned, total reported by API
+  const loadConversationsPage = useCallback(
+    async (offset: number, append: boolean) => {
+      const key = `${providerParam ?? "all"}:${offset}:${append ? "append" : "replace"}`;
+      if (conversationFetchesRef.current.has(key)) return;
+      conversationFetchesRef.current.add(key);
+      setRemoteLoading(true);
       try {
-        // eslint-disable-next-line no-console
-        console.debug('[OmniInbox] loadInboxPage', { page, offset, nextCount: nextMessages.length, total: data.total, provider: providerParam });
-      } catch (e) {
-        // ignore logging errors
+        const data = await getInboxConversations({
+          provider: providerParam,
+          include_ignored: false,
+          limit: PAGE_SIZE,
+          offset,
+        });
+        setConversations((prev) => (append ? [...prev, ...data.items] : data.items));
+        const nextOffset = offset + data.items.length;
+        setConversationOffset(nextOffset);
+        const total = data.total;
+        setConversationHasMore(
+          typeof total === "number" ? nextOffset < total : data.items.length === PAGE_SIZE,
+        );
+      } finally {
+        setRemoteLoading(false);
       }
-      const existing = page === 1 ? new Set<string>() : new Set(messagesRef.current.map((m) => m.id));
-      const dedupedNextMessages = page === 1 ? nextMessages : nextMessages.filter((m) => !existing.has(m.id));
-      const uniqueAdded = dedupedNextMessages.length;
-
-      setMessages((prev) => {
-        if (page === 1) return nextMessages;
-        return [...prev, ...dedupedNextMessages];
-      });
-
-      setBlacklist(data.blacklist ?? []);
-      setApiPage(page);
-
-      const total = data.total ?? null;
-      setApiTotal(total);
-
-      // Track consecutive empty loads (no unique items added)
-      if (uniqueAdded === 0) {
-        consecutiveEmptyLoadsRef.current = (consecutiveEmptyLoadsRef.current || 0) + 1;
-      } else {
-        consecutiveEmptyLoadsRef.current = 0;
-      }
-
-      // Offset pagination should continue while API still returns a full batch or we added unique items.
-      // Do not rely solely on `total` because some backends return inconsistent totals.
-      // Stop after a few consecutive empty loads to avoid infinite loops.
-      const maxEmptyRepeats = 3;
-      const hasMoreMessages = (nextMessages.length === apiPageSize || uniqueAdded > 0) && (consecutiveEmptyLoadsRef.current < maxEmptyRepeats);
-
-      try {
-        // eslint-disable-next-line no-console
-        console.debug('[OmniInbox] paginationState', { page, nextMessagesLength: nextMessages.length, uniqueAdded, consecutiveEmptyLoads: consecutiveEmptyLoadsRef.current, hasMoreMessages });
-      } catch {}
-
-      setApiHasMore(hasMoreMessages);
-    } catch (err) {
-      // swallow, we keep old data; optionally show toast
-    } finally {
-      loadingPagesRef.current.delete(page);
-      setRemoteLoading(false);
-    }
-  }, [apiPageSize, providerParam]);
-
-  useEffect(() => {
-    setApiPage(1);
-    setListPage(1);
-    setApiTotal(null);
-    setApiHasMore(false);
-    void loadInboxPage(1);
-  }, [providerParam, loadInboxPage]);
-
-  // Persist channelFilter to localStorage whenever it changes
-  useEffect(() => {
-    if (typeof window !== 'undefined') {
-      localStorage.setItem('omniInboxChannelFilter', channelFilter);
-    }
-  }, [channelFilter]);
-
-  const handleLoadMore = useCallback(() => {
-    if (remoteLoading || !apiHasMore) return;
-    const nextPage = apiPageRef.current + 1;
-    if (loadingPagesRef.current.has(nextPage)) return;
-    void loadInboxPage(nextPage);
-  }, [remoteLoading, apiHasMore, loadInboxPage, apiPage]);
-
-  useEffect(() => {
-    const container = convoListRef.current;
-    if (!container) return;
-
-    const onScroll = () => {
-      if (remoteLoading || !apiHasMore) return;
-      const distanceToBottom = container.scrollHeight - container.scrollTop - container.clientHeight;
-      if (distanceToBottom < 120) {
-        handleLoadMore();
-      }
-    };
-
-    container.addEventListener("scroll", onScroll, { passive: true });
-    return () => container.removeEventListener("scroll", onScroll);
-  }, [apiHasMore, remoteLoading, handleLoadMore]);
-
-  // When list remains near bottom after a load, continue loading next offset page automatically
-  // so users don't need to manually scroll again.
-  useEffect(() => {
-    if (remoteLoading || !apiHasMore) return;
-    const container = convoListRef.current;
-    if (!container) return;
-
-    const distanceToBottom = container.scrollHeight - container.scrollTop - container.clientHeight;
-    if (distanceToBottom < 120) {
-      const timer = window.setTimeout(() => {
-        handleLoadMore();
-      }, 80);
-      return () => window.clearTimeout(timer);
-    }
-  }, [apiPage, apiHasMore, remoteLoading, handleLoadMore]);
-
-  const filteredConversations = useMemo(() => {
-    const grouped = new Map<string, PlatformMessage[]>();
-    filteredMessages.forEach((m) => {
-      const bucket = grouped.get(m.conversationId) ?? [];
-      bucket.push(m);
-      grouped.set(m.conversationId, bucket);
-    });
-
-    const conversations: InboxConversation[] = Array.from(grouped.entries()).map(([id, convoMessages]) => {
-      const sorted = [...convoMessages].sort((a, b) => b.receivedAt.localeCompare(a.receivedAt));
-      const latest = sorted[0];
-      const pIds = Array.from(new Set(convoMessages.flatMap((item) => item.projectIds ?? [])));
-      const computedChannel = latest.channel ?? mapProviderToChannel((latest.rawChannel as any)?.provider);
-      const computedThreadTitle = (latest.rawConversation as any)?.name || latest.subject || latest.snippet || latest.senderDisplay || "(No title)";
-
-      return {
-        id,
-        threadTitle: computedThreadTitle,
-        channel: computedChannel,
-        senderId: latest.senderId,
-        senderDisplay: latest.senderDisplay,
-        messageIds: convoMessages.map((m) => m.id),
-        messageCount: convoMessages.length,
-        latestReceivedAt: latest.receivedAt,
-        latestSubject: latest.subject,
-        latestSnippet: latest.snippet,
-        latestContent: latest.content,
-        projectIds: pIds,
-        latestExternalId: latest.externalId ?? null,
-        latestRawChannelProvider: (latest.rawChannel as any)?.provider ?? null,
-      };
-    });
-
-    return conversations.sort((a, b) => b.latestReceivedAt.localeCompare(a.latestReceivedAt));
-  }, [filteredMessages]);
-
-  const totalPages = Math.max(1, Math.ceil(filteredConversations.length / conversationPageSize));
-  const safePage = Math.min(listPage, totalPages);
-  
-  const pagedConversations = useMemo(() => {
-    const start = (safePage - 1) * conversationPageSize;
-    return filteredConversations.slice(start, start + conversationPageSize);
-  }, [filteredConversations, conversationPageSize, safePage]);
-
-  const selectedConversation = useMemo(
-    () => filteredConversations.find((c) => c.id === selectedConversationId) ?? null,
-    [filteredConversations, selectedConversationId]
+    },
+    [providerParam],
   );
 
-  const selectedConversationMessages = useMemo(() => {
-    if (!selectedConversation) return [];
-    return filteredMessages.filter((m) => m.conversationId === selectedConversation.id)
-      .sort((a, b) => a.receivedAt.localeCompare(b.receivedAt));
-  }, [filteredMessages, selectedConversation]);
+  const loadConversationMessages = useCallback(
+    async (conversationId: string, appendOlder: boolean) => {
+      const meta = messageMetaByConversation[conversationId] ?? { offset: 0, hasMore: true, loading: false };
+      if (meta.loading) return;
+      if (appendOlder && !meta.hasMore) return;
+      const offset = appendOlder ? meta.offset : 0;
+      const key = `${providerParam ?? "all"}:${conversationId}:${offset}:${appendOlder ? "append" : "replace"}`;
+      if (messageFetchesRef.current.has(key)) return;
+      messageFetchesRef.current.add(key);
 
-  const messagesEndRef = useRef<HTMLDivElement | null>(null);
+      setMessageMetaByConversation((prev) => ({
+        ...prev,
+        [conversationId]: { ...(prev[conversationId] ?? { offset: 0, hasMore: true }), loading: true },
+      }));
+      setMessagesLoading(true);
+
+      try {
+        const data = await getInboxMessages({
+          provider: providerParam,
+          conversation_id: conversationId,
+          include_ignored: false,
+          limit: PAGE_SIZE,
+          offset,
+        });
+
+        const incoming = [...data.items].sort((a, b) => a.receivedAt.localeCompare(b.receivedAt));
+        setMessagesByConversation((prev) => {
+          const existing = prev[conversationId] ?? [];
+          if (!appendOlder) return { ...prev, [conversationId]: incoming };
+          const existingIds = new Set(existing.map((m) => m.id));
+          const merged = [...incoming.filter((m) => !existingIds.has(m.id)), ...existing];
+          return { ...prev, [conversationId]: merged };
+        });
+
+        const nextOffset = offset + data.items.length;
+        const total = data.total;
+        const hasMore = typeof total === "number" ? nextOffset < total : data.items.length === PAGE_SIZE;
+        setMessageMetaByConversation((prev) => ({
+          ...prev,
+          [conversationId]: { offset: nextOffset, hasMore, loading: false },
+        }));
+      } finally {
+        setMessagesLoading(false);
+        setMessageMetaByConversation((prev) => ({
+          ...prev,
+          [conversationId]: {
+            ...(prev[conversationId] ?? { offset: 0, hasMore: true }),
+            loading: false,
+          },
+        }));
+      }
+    },
+    [messageMetaByConversation, providerParam],
+  );
 
   useEffect(() => {
-    if (selectedConversationId && messagesEndRef.current) {
-      messagesEndRef.current.scrollIntoView({ behavior: "auto" });
+    if (!usedInitialSeedRef.current && providerParam === "email" && (initialConversations?.length ?? 0) > 0) {
+      usedInitialSeedRef.current = true;
+      initializedProviderRef.current = providerParam;
+      return;
     }
-  }, [selectedConversationId, selectedConversationMessages.length]);
+    if (initializedProviderRef.current === providerParam) return;
+    initializedProviderRef.current = providerParam;
+    conversationFetchesRef.current.clear();
+    messageFetchesRef.current.clear();
+    setConversationOffset(0);
+    setConversationHasMore(true);
+    setSelectedConversationId(null);
+    setMessagesByConversation({});
+    setMessageMetaByConversation({});
+    void loadConversationsPage(0, false);
+  }, [providerParam, loadConversationsPage]);
 
-  // IntersectionObserver to trigger loading more when user reaches the bottom.
+  useEffect(() => {
+    if (conversations.length === 0) return;
+    const firstId = conversations[0]?.id;
+    if (!firstId) return;
+    setSelectedConversationId((prev) => prev ?? firstId);
+  }, [conversations]);
+
+  useEffect(() => {
+    if (!selectedConversationId) return;
+    const hasLoaded = (messagesByConversation[selectedConversationId]?.length ?? 0) > 0;
+    if (!hasLoaded) {
+      void loadConversationMessages(selectedConversationId, false);
+    }
+  }, [selectedConversationId, messagesByConversation, loadConversationMessages]);
+
   useEffect(() => {
     const root = convoListRef.current;
-    const sentinel = sentinelRef.current;
+    const sentinel = convoSentinelRef.current;
     if (!root || !sentinel) return;
 
-    const obs = new IntersectionObserver((entries) => {
-      entries.forEach((entry) => {
-        if (entry.isIntersecting) {
-          if (!remoteLoading && apiHasMore) {
-            handleLoadMore();
+    const obs = new IntersectionObserver(
+      (entries) => {
+        entries.forEach((entry) => {
+          if (entry.isIntersecting && conversationHasMore && !remoteLoading) {
+            void loadConversationsPage(conversationOffset, true);
           }
-        }
-      });
-    }, {
-      root,
-      rootMargin: '200px',
-      threshold: 0.1,
-    });
+        });
+      },
+      { root, rootMargin: "200px", threshold: 0.1 },
+    );
 
     obs.observe(sentinel);
     return () => obs.disconnect();
-  }, [handleLoadMore, remoteLoading, apiHasMore]);
+  }, [conversationHasMore, conversationOffset, remoteLoading, loadConversationsPage]);
+
+  useEffect(() => {
+    const root = messageListRef.current;
+    const sentinel = messageTopSentinelRef.current;
+    if (!root || !sentinel || !selectedConversationId) return;
+
+    const obs = new IntersectionObserver(
+      (entries) => {
+        entries.forEach((entry) => {
+          if (!entry.isIntersecting) return;
+          const meta = messageMetaByConversation[selectedConversationId];
+          if (!meta?.loading && meta?.hasMore) {
+            void loadConversationMessages(selectedConversationId, true);
+          }
+        });
+      },
+      { root, rootMargin: "100px", threshold: 0.1 },
+    );
+
+    obs.observe(sentinel);
+    return () => obs.disconnect();
+  }, [selectedConversationId, messageMetaByConversation, loadConversationMessages]);
+
+  const filteredConversations = useMemo(() => {
+    return conversations.filter((c) => {
+      const byQuery =
+        searchQuery.trim() === "" ||
+        c.name.toLowerCase().includes(searchQuery.toLowerCase()) ||
+        c.id.toLowerCase().includes(searchQuery.toLowerCase());
+      const byBlacklist = hideBlacklisted ? !ignoredConversations.has(c.id) : true;
+      return byQuery && byBlacklist;
+    });
+  }, [conversations, searchQuery, hideBlacklisted, ignoredConversations]);
+
+  const selectedConversation = useMemo(
+    () => filteredConversations.find((c) => c.id === selectedConversationId) ?? null,
+    [filteredConversations, selectedConversationId],
+  );
+
+  const selectedConversationMessages = useMemo(
+    () =>
+      selectedConversationId
+        ? [...(messagesByConversation[selectedConversationId] ?? [])].sort((a, b) =>
+            a.receivedAt.localeCompare(b.receivedAt),
+          )
+        : [],
+    [selectedConversationId, messagesByConversation],
+  );
 
   const handleSelectConversation = (id: string) => {
-    if (id !== selectedConversationId) {
-      setSelectedConversationId(id);
-      clearAll();
-      setIsMappingOpen(false);
-    }
-  };
-
-  const handleCreateProject = (code: string) => {
-    const id = `proj-${Date.now()}`;
-    const newProj: Project = {
-      id, code, name: code, ownerName: "", status: "new", lastUpdateAt: new Date().toISOString(), unreadCount: 0, summary: "", todoList: [],
-    };
-    setLocalProjects((prev) => [newProj, ...prev]);
-    setToastMessage(`Tạo project ${code} thành công.`);
+    if (id === selectedConversationId) return;
+    setSelectedConversationId(id);
+    clearAll();
+    setIsMappingOpen(false);
   };
 
   const handleSaveMapping = async (projectIds: string[]) => {
-    if (selectedIds.size === 0 || projectIds.length === 0) return;
+    if (!selectedConversationId || selectedIds.size === 0 || projectIds.length === 0) return;
     const msgIds = Array.from(selectedIds);
     setSaving(true);
-    
-    const previousByMessage = Object.fromEntries(msgIds.map(mId => [mId, messages.find(m => m.id === mId)?.projectIds || []]));
-    
     const result = await saveMessageProjectMapping({ messageIds: msgIds, projectIds });
     if (result.ok) {
-      setMessages((prev) => prev.map((m) => msgIds.includes(m.id) ? { ...m, projectIds: [...new Set([...(m.projectIds || []), ...projectIds])] } : m));
-      setUndoStack((prev) => [{ id: `map-${Date.now()}`, messageIds: msgIds, toProjectIds: projectIds, previousByMessage, createdAt: Date.now() }, ...prev].slice(0, 30));
-      setRedoStack([]);
+      setMessagesByConversation((prev) => {
+        const current = prev[selectedConversationId] ?? [];
+        const mapped = current.map((m) =>
+          msgIds.includes(m.id) ? { ...m, projectIds: [...new Set([...(m.projectIds ?? []), ...projectIds])] } : m,
+        );
+        return { ...prev, [selectedConversationId]: mapped };
+      });
       clearAll();
       setIsMappingOpen(false);
     }
-    setToastMessage(result.message || "Đã gán tin nhắn vào project thành công.");
+    setToastMessage(result.message || "Đã gán tin nhắn vào project.");
     setSaving(false);
   };
 
-  const handleToggleIgnoreConversation = async (conversationId: string) => {
-    const currentState = ignoredConversations.has(conversationId);
-    const newState = !currentState;
-    
-    // Optimistic update
-    setIgnoredConversations(prev => {
-      const next = new Set(prev);
-      if (newState) next.add(conversationId);
-      else next.delete(conversationId);
-      return next;
-    });
-
-    try {
-      const res = await ignoreConversation(conversationId, newState);
-      if (!res.ok) {
-        // revert optimistic update
-        setIgnoredConversations(prev => {
-          const next = new Set(prev);
-          if (!newState) next.add(conversationId);
-          else next.delete(conversationId);
-          return next;
-        });
-        setToastMessage(res.message);
-      } else {
-        setToastMessage(newState ? "Đã chặn hội thoại" : "Đã bỏ chặn");
-        if (newState && selectedConversationId === conversationId) {
-          setSelectedConversationId(null);
-        }
-      }
-    } catch (err) {
-      // revert
-      setIgnoredConversations(prev => {
-        const next = new Set(prev);
-        if (!newState) next.add(conversationId);
-        else next.delete(conversationId);
-        return next;
-      });
-    }
-  };
-
-  // Undo / Redo keybinds
-  useEffect(() => {
-    function handleKeydown(ev: KeyboardEvent) {
-      const meta = ev.ctrlKey || ev.metaKey;
-      if (!meta) return;
-      const tag = (ev.target as HTMLElement | null)?.tagName?.toLowerCase();
-      if (tag === "input" || tag === "textarea" || tag === "select") return;
-
-      const key = ev.key.toLowerCase();
-      if (key === "z" && !ev.shiftKey) {
-        if (undoStack.length === 0) return;
-        ev.preventDefault();
-        // implement undo map logic here if needed
-      }
-
-      if (key === "y" || (key === "z" && ev.shiftKey)) {
-        if (redoStack.length === 0) return;
-        ev.preventDefault();
-        // implement redo map logic here if needed
-      }
-    }
-    window.addEventListener("keydown", handleKeydown);
-    return () => window.removeEventListener("keydown", handleKeydown);
-  }, [undoStack, redoStack]);
-
   return (
     <div className="flex flex-col h-full bg-slate-50 relative overflow-hidden font-sans rounded-2xl shadow-sm border border-slate-200">
-      {/* Page Header */}
       <header className="bg-white border-b border-slate-200 px-6 py-4 shrink-0 shadow-sm z-10 relative">
         <h1 className="text-2xl font-bold text-slate-900 tracking-tight">Unified Inbox & Mapping</h1>
-        <p className="text-sm text-slate-500 mt-1">Tổng hợp tin nhắn từ Email, Zalo, WhatsApp; gán vào project và quản lý blacklist</p>
       </header>
 
-      {/* Filter Bar */}
       <div className="bg-white border-b border-slate-200 px-6 py-3 flex items-center justify-between shrink-0 sticky top-0 z-10">
-        {/* Channel Tabs */}
         <div className="flex bg-slate-100 p-1 rounded-lg border border-slate-200">
-          {(['email', 'zalo', 'whatsapp'] as const).map(ch => {
+          {(["email", "zalo", "whatsapp"] as const).map((ch) => {
             const active = channelFilter === ch;
             const ChIcon = CHANNEL_COLORS[ch].icon;
             return (
               <button
                 key={ch}
-                onClick={() => { setChannelFilter(ch); setListPage(1); }}
+                onClick={() => setChannelFilter(ch)}
                 className={`flex items-center gap-1.5 px-3 py-1.5 rounded-md text-sm font-medium transition-all ${
                   active ? "bg-indigo-500 text-white shadow-sm" : "text-slate-600 hover:bg-slate-200"
                 }`}
@@ -494,341 +345,172 @@ export function OmniInboxBoard({ initialMessages, initialBlacklist, projects }: 
           })}
         </div>
 
-        {/* Search */}
         <div className="relative flex-1 max-w-md mx-6">
           <Search className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" size={16} />
           <input
             value={searchQuery}
-            onChange={(e) => { setSearchQuery(e.target.value); setListPage(1); }}
-            placeholder="Tìm theo người gửi, tiêu đề, nội dung..."
+            onChange={(e) => setSearchQuery(e.target.value)}
+            placeholder="Tìm hội thoại..."
             className="w-full pl-9 pr-8 py-2 bg-slate-50 border border-slate-200 rounded-full text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:bg-white transition"
           />
-          {searchQuery && (
-            <button
-              onClick={() => { setSearchQuery(''); setListPage(1); }}
-              className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600 focus:outline-none"
-            >
+          {searchQuery ? (
+            <button onClick={() => setSearchQuery("")} className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-400">
               <X size={14} />
             </button>
-          )}
+          ) : null}
         </div>
 
-        {/* Right Actions */}
-        <div className="flex items-center gap-4">
-          <label className="flex items-center gap-2 cursor-pointer group">
-            <div className="relative">
-              <input
-                type="checkbox"
-                className="sr-only"
-                checked={hideBlacklisted}
-                onChange={(e) => setHideBlacklisted(e.target.checked)}
-              />
-              <div className={`w-9 h-5 rounded-full transition-colors ${hideBlacklisted ? "bg-indigo-500" : "bg-slate-300"}`}></div>
-              <div className={`absolute left-0.5 top-0.5 bg-white w-4 h-4 rounded-full transition-transform shadow-sm ${hideBlacklisted ? "translate-x-4" : ""}`}></div>
-            </div>
-            <span className="text-sm font-medium text-slate-700 select-none group-hover:text-slate-900 flex items-center gap-1">
-              <Ban size={14} className={hideBlacklisted ? "text-rose-500" : "text-slate-400"} /> Ẩn blacklist
-            </span>
-          </label>
-        </div>
+        <label className="flex items-center gap-2 cursor-pointer">
+          <input type="checkbox" className="sr-only" checked={hideBlacklisted} onChange={(e) => setHideBlacklisted(e.target.checked)} />
+          <span className="text-sm font-medium text-slate-700 flex items-center gap-1">
+            <Ban size={14} className={hideBlacklisted ? "text-rose-500" : "text-slate-400"} /> Ẩn blacklist
+          </span>
+        </label>
       </div>
 
-      {/* Main Content Area */}
-      <div className="flex flex-1 overflow-hidden relative">
-        
-        {/* Column 1: Conversation List (320px wide) */}
-        <div className="w-[320px] bg-white border-r border-slate-200 flex flex-col shrink-0 z-0 h-full">
-          <div className="p-3 border-b border-slate-100 flex items-center justify-between shadow-sm shrink-0">
-              <div className="flex flex-col">
-              <div className="flex items-center gap-2">
-                <h2 className="text-sm font-semibold text-slate-800">Hội thoại</h2>
-                <span className="px-2 py-0.5 text-xs font-semibold bg-indigo-50 text-indigo-600 rounded-full leading-tight">
-                  {filteredConversations.length} cuộc
-                </span>
-              </div>
-              <span className="text-[11px] text-slate-500 mt-0.5">
-                Đã tải {messages.length} tin ({filteredConversations.length} cuộc){apiTotal ? ` / ${apiTotal}` : ""} • APIPg: {apiPage} • hasMore: {apiHasMore ? "yes" : "no"}
-              </span>
-            </div>
-            <div className="flex items-center gap-1 text-slate-500 text-sm">
-              <button
-                disabled={safePage <= 1}
-                onClick={() => setListPage(p => Math.max(1, p - 1))}
-                className="p-1 rounded hover:bg-slate-100 disabled:opacity-30 disabled:hover:bg-transparent"
-              >
-                <ChevronLeft size={16} />
-              </button>
-              <span className="text-[12px] font-medium w-16 text-center">Trang {safePage}/{totalPages}</span>
-              <button
-                disabled={safePage >= totalPages}
-                onClick={() => setListPage(p => Math.min(totalPages, p + 1))}
-                className="p-1 rounded hover:bg-slate-100 disabled:opacity-30 disabled:hover:bg-transparent"
-              >
-                <ChevronRight size={16} />
-              </button>
-            </div>
+      <div className="flex flex-1 overflow-hidden relative min-w-0">
+        <div className="w-[320px] bg-white border-r border-slate-200 flex flex-col shrink-0 h-full">
+          <div className="p-3 border-b border-slate-100">
+            <h2 className="text-sm font-semibold text-slate-800">Hội thoại ({filteredConversations.length})</h2>
           </div>
-          
           <div ref={convoListRef} className="flex-1 overflow-y-auto p-2 space-y-1 bg-slate-50/50 relative">
-            {remoteLoading ? (
-              Array.from({ length: 5 }).map((_, i) => (
-                <div key={i} className="h-20 bg-slate-100 animate-pulse rounded-lg border border-slate-200/50" />
-              ))
-            ) : pagedConversations.length === 0 ? (
-              <div className="py-12 px-6 flex flex-col items-center text-center">
-                <div className="w-12 h-12 bg-slate-100 rounded-full flex items-center justify-center mb-3">
-                  <Mail className="text-slate-400" size={24} />
-                </div>
-                <h3 className="text-sm font-semibold text-slate-800">Không tìm thấy?</h3>
-                <p className="text-xs text-slate-500 mt-1">Thử đổi bộ lọc hoặc từ khóa tìm kiếm</p>
-              </div>
-            ) : (
-              pagedConversations.map((c) => {
-                const isSelected = selectedConversation?.id === c.id;
-                const cConf = CHANNEL_COLORS[c.channel] || CHANNEL_COLORS.email;
-                const isBlacklisted = blacklistedSet.has(`${c.channel}:${c.senderId}`);
-                
-                return (
-                  <div
-                    key={c.id}
-                    onClick={() => handleSelectConversation(c.id)}
-                    className={`block w-full text-left p-3 rounded-lg border cursor-pointer group transition duration-150 ${
-                      isSelected 
-                        ? 'bg-indigo-50 border-indigo-400 border-l-[3px] shadow-sm ml-[1px]' 
-                        : 'bg-white border-slate-200 hover:border-slate-300 hover:shadow-sm'
-                    }`}
-                  >
-                    <div className="flex gap-3">
-                      <div className="relative shrink-0 mt-0.5">
-                        <div className="w-10 h-10 rounded-full bg-gradient-to-br from-slate-200 to-slate-300 flex items-center justify-center text-slate-600 font-bold text-sm shadow-inner ring-1 ring-white">
-                          {c.threadTitle.charAt(0).toUpperCase()}
-                        </div>
-                        <div className={`absolute -bottom-1 -right-1 px-1 py-[2px] rounded uppercase font-bold text-[9px] border border-white shadow-sm tracking-wide ${cConf.bg} ${cConf.text}`}>
-                          {cConf.label}
-                        </div>
-                      </div>
-                      
-                      <div className="flex-1 min-w-0">
-                        <div className="flex justify-between items-start mb-0.5">
-                          <h3 className={`text-[13px] font-semibold truncate pr-2 ${isSelected ? 'text-slate-900' : 'text-slate-800 group-hover:text-indigo-600 transition-colors'}`}>
-                            {c.threadTitle}
-                          </h3>
-                          <span className="text-[11px] text-slate-400 whitespace-nowrap tabular-nums font-medium" title={c.latestReceivedAt}>
-                            {timeAgo(c.latestReceivedAt)}
-                          </span>
-                        </div>
-                        
-                        <p className={`text-[12px] leading-[1.35] truncate transition-colors ${isSelected ? 'text-slate-700' : 'text-slate-500'}`}>
-                          <span className="font-medium mr-1">{c.senderDisplay}:</span>
-                          {c.latestSnippet || "Chưa có nội dung"}
-                        </p>
-                        
-                        <div className="flex items-center justify-between mt-2 h-4">
-                          <div className="flex gap-1.5 flex-wrap">
-                            {c.projectIds.map(pid => (
-                              <span key={pid} className="inline-flex items-center gap-1 w-2 h-2 rounded-full bg-emerald-500" title={`Đã gán dự án: ${pid}`} />
-                            ))}
-                            {isBlacklisted && <span title="Đã chặn"><Ban size={12} className="text-rose-500" /></span>}
-                          </div>
-                          {c.messageCount > 1 && (
-                            <span className="inline-flex items-center justify-center min-w-[18px] px-1.5 h-[18px] rounded-full bg-slate-100 border border-slate-200 text-[10px] font-bold text-slate-500">
-                              {c.messageCount}
-                            </span>
-                          )}
-                        </div>
-                      </div>
-                    </div>
+            {filteredConversations.map((c) => {
+              const isSelected = selectedConversation?.id === c.id;
+              const channel: MessageChannel =
+                channelFilter === "all"
+                  ? "email"
+                  : channelFilter;
+              const cConf = CHANNEL_COLORS[channel] || CHANNEL_COLORS.email;
+              return (
+                <button
+                  key={c.id}
+                  onClick={() => handleSelectConversation(c.id)}
+                  className={`block w-full text-left p-3 rounded-lg border transition ${
+                    isSelected ? "bg-indigo-50 border-indigo-400 border-l-[3px]" : "bg-white border-slate-200 hover:border-slate-300"
+                  }`}
+                >
+                  <div className="flex justify-between gap-2">
+                    <p className="text-[13px] font-semibold truncate">{c.name || c.id}</p>
+                    <span className={`px-1 py-[1px] rounded text-[9px] border ${cConf.bg} ${cConf.text}`}>{cConf.label}</span>
                   </div>
-                );
-              })
-            )}
-            <div ref={sentinelRef} className="w-full h-2" />
+                  <p className="text-[11px] text-slate-500 mt-1">{timeAgo(c.lastMessageAt ?? c.updatedAt ?? c.createdAt ?? "")}</p>
+                </button>
+              );
+            })}
+            <div ref={convoSentinelRef} className="w-full h-2" />
+            {remoteLoading ? <p className="text-xs text-slate-500 py-2 text-center">Đang tải thêm hội thoại...</p> : null}
           </div>
-
-          {apiHasMore && (
-            <div className="px-3 py-2 border-t border-slate-100 bg-slate-50 text-center">
-              <button
-                onClick={handleLoadMore}
-                disabled={remoteLoading}
-                className="inline-flex items-center gap-1 px-3 py-1.5 text-xs font-semibold text-slate-700 bg-white border border-slate-300 rounded-md hover:bg-slate-100 disabled:opacity-40"
-              >
-                Tải thêm tin nhắn
-              </button>
-            </div>
-          )}
-
         </div>
 
-        {/* Column 2: Message Detail Panel (flex-1) */}
-        <div className="flex-1 bg-white relative flex flex-col min-w-0 z-0 h-full">
+        <div className="flex-1 bg-white relative flex flex-col min-w-0 h-full overflow-x-hidden">
           {!selectedConversation ? (
-             <div className="flex-1 flex flex-col items-center justify-center text-slate-400 bg-slate-50/50">
-               <div className="w-16 h-16 rounded-2xl bg-white border border-slate-200 shadow-sm flex items-center justify-center mb-4">
-                 <Mail size={28} className="text-slate-300" />
-               </div>
-               <h3 className="text-base font-medium text-slate-800">Chưa chọn hội thoại</h3>
-               <p className="text-sm mt-1">Vui lòng chọn một cuộc hội thoại từ danh sách bên trái.</p>
-             </div>
+            <div className="flex-1 flex flex-col items-center justify-center text-slate-400">
+              <Mail size={28} className="text-slate-300" />
+              <p className="text-sm mt-2">Vui lòng chọn hội thoại</p>
+            </div>
           ) : (
             <>
-              {/* Detail Header */}
-              <div className="px-6 py-4 border-b border-slate-200 shrink-0 bg-white/80 backdrop-blur-md sticky top-0 z-10">
+              <div className="px-6 py-4 border-b border-slate-200 shrink-0 bg-white sticky top-0 z-10 min-w-0">
                 <div className="flex justify-between items-start gap-4">
                   <div className="min-w-0">
-                    <h2 className="text-lg font-bold text-slate-900 truncate leading-tight">
-                      {selectedConversation.threadTitle}
-                    </h2>
-                    <div className="flex items-center gap-2 mt-1.5 flex-wrap">
-                      <span className="text-sm font-medium text-slate-700">{selectedConversation.senderDisplay}</span>
-                      <span className="w-1 h-1 rounded-full bg-slate-300" />
-                      <span className="text-xs text-slate-500 bg-slate-100 px-2 py-0.5 rounded-full border border-slate-200">
-                        {selectedConversation.latestRawChannelProvider || selectedConversation.channel}
-                      </span>
-                    </div>
-                    
-                    <div className="flex gap-4 mt-3">
-                      <button onClick={() => selectAll(selectedConversationMessages.map(m => m.id))} className="text-[13px] font-medium text-indigo-600 hover:underline hover:text-indigo-800">
-                        Chọn tất cả
-                      </button>
-                      <button onClick={() => clearAll()} className="text-[13px] font-medium text-slate-500 hover:text-slate-800">
-                        Bỏ chọn
-                      </button>
+                    <h2 className="text-lg font-bold text-slate-900 truncate">{selectedConversation.name || selectedConversation.id}</h2>
+                    <div className="flex gap-4 mt-2">
+                      <button onClick={() => selectAll(selectedConversationMessages.map((m) => m.id))} className="text-[13px] font-medium text-indigo-600 hover:underline">Chọn tất cả</button>
+                      <button onClick={clearAll} className="text-[13px] font-medium text-slate-500 hover:text-slate-800">Bỏ chọn</button>
                     </div>
                   </div>
                   <div className="flex items-center gap-2 shrink-0">
-                    <button 
-                      onClick={() => handleToggleIgnoreConversation(selectedConversation.id)} 
-                      title={ignoredConversations.has(selectedConversation.id) ? "Bỏ chặn" : "Chặn hội thoại"} 
-                      className={`p-2 rounded-lg border border-slate-200 transition shadow-sm ${ignoredConversations.has(selectedConversation.id) ? "text-rose-600 bg-rose-50" : "text-slate-400 hover:text-rose-600 hover:bg-rose-50 bg-white"}`}
+                    <button
+                      onClick={async () => {
+                        const current = ignoredConversations.has(selectedConversation.id);
+                        const nextState = !current;
+                        setIgnoredConversations((prev) => {
+                          const next = new Set(prev);
+                          if (nextState) next.add(selectedConversation.id);
+                          else next.delete(selectedConversation.id);
+                          return next;
+                        });
+                        const res = await ignoreConversation(selectedConversation.id, nextState);
+                        if (!res.ok) setToastMessage(res.message);
+                      }}
+                      className="p-2 rounded-lg border border-slate-200 text-slate-400 hover:text-rose-600 hover:bg-rose-50"
                     >
                       <Ban size={16} />
                     </button>
-                    <button title="User Profile" className="p-2 rounded-lg border border-slate-200 text-slate-400 hover:text-slate-700 hover:bg-slate-50 transition shadow-sm bg-white">
-                      <User size={16} />
-                    </button>
-                    <button className="p-2 rounded-lg border border-slate-200 text-slate-400 hover:text-slate-700 hover:bg-slate-50 transition shadow-sm bg-white">
-                      <MoreVertical size={16} />
-                    </button>
+                    <button className="p-2 rounded-lg border border-slate-200 text-slate-400"><User size={16} /></button>
+                    <button className="p-2 rounded-lg border border-slate-200 text-slate-400"><MoreVertical size={16} /></button>
                   </div>
                 </div>
               </div>
 
-              {/* Messages Area */}
-              <div className="flex-1 overflow-y-auto px-6 py-6 space-y-6 pb-28 relative bg-[#F8FAFC]">
+              <div ref={messageListRef} className="flex-1 overflow-y-auto px-6 py-6 space-y-6 pb-28 relative bg-[#F8FAFC] min-w-0">
+                <div ref={messageTopSentinelRef} className="h-2 w-full" />
+                {messagesLoading ? <p className="text-xs text-slate-500 text-center">Đang tải tin nhắn cũ...</p> : null}
                 {selectedConversationMessages.map((msg) => {
                   const checked = selectedIds.has(msg.id);
                   const isExpanded = expandedMsgIds.includes(msg.id);
                   return (
-                    <div 
-                      key={msg.id} 
-                      className={`relative flex gap-3 group transition-colors p-2 -mx-2 rounded-xl ${
-                        checked ? "bg-indigo-50/60 ring-1 ring-indigo-200" : "hover:bg-slate-100/50"
-                      }`}
-                    >
+                    <div key={msg.id} className={`relative flex gap-3 p-2 -mx-2 rounded-xl min-w-0 ${checked ? "bg-indigo-50/60 ring-1 ring-indigo-200" : "hover:bg-slate-100/50"}`}>
                       <div className="pt-2 shrink-0 w-6 flex justify-center">
-                        <input
-                          type="checkbox"
-                          checked={checked}
-                          onChange={() => toggleSelection(msg.id)}
-                          className={`w-[18px] h-[18px] rounded border-slate-300 text-indigo-600 focus:ring-indigo-500 cursor-pointer transition ${checked ? "opacity-100" : "opacity-0 group-hover:opacity-100"}`}
-                        />
+                        <input type="checkbox" checked={checked} onChange={() => toggleSelection(msg.id)} className="w-[18px] h-[18px] rounded border-slate-300 text-indigo-600" />
                       </div>
-                      <div className="shrink-0 pt-0.5">
-                        <div className="w-8 h-8 rounded-full bg-slate-200 flex items-center justify-center text-slate-600 text-xs font-bold border border-slate-300">
-                          {msg.senderDisplay.charAt(0).toUpperCase()}
-                        </div>
-                      </div>
-                      
                       <div className="flex-1 min-w-0 space-y-1">
-                        <div className="flex items-baseline gap-2">
-                          <span className="text-[13px] font-semibold text-slate-900">{msg.senderDisplay}</span>
-                          <span className="text-[11px] text-slate-400" title={msg.receivedAt}>{timeAgo(msg.receivedAt)}</span>
+                        <div className="flex items-baseline gap-2 min-w-0">
+                          <span className="text-[13px] font-semibold text-slate-900 break-words [overflow-wrap:anywhere]">{msg.senderDisplay}</span>
+                          <span className="text-[11px] text-slate-400">{timeAgo(msg.receivedAt)}</span>
                         </div>
-                        
-                        <div className="inline-block bg-white border border-slate-200 rounded-2xl rounded-tl-sm px-4 py-3 max-w-[95%] shadow-[0_1px_2px_rgba(0,0,0,0.02)]">
-                          <MessageRenderer 
-                            content={msg.content} 
+                        <div className="inline-block bg-white border border-slate-200 rounded-2xl rounded-tl-sm px-4 py-3 max-w-[95%] min-w-0 overflow-hidden break-words [overflow-wrap:anywhere]">
+                          <MessageRenderer
+                            content={msg.content}
                             bodyHtml={msg.bodyHtml}
-                            isExpanded={isExpanded} 
-                            onToggleExpand={() => setExpandedMsgIds(p => p.includes(msg.id) ? p.filter(x => x !== msg.id) : [...p, msg.id])} 
+                            isExpanded={isExpanded}
+                            onToggleExpand={() =>
+                              setExpandedMsgIds((p) => (p.includes(msg.id) ? p.filter((x) => x !== msg.id) : [...p, msg.id]))
+                            }
                           />
                         </div>
-
-                        {(msg.project || (msg.projectIds && msg.projectIds.length > 0)) && (
-                          <div className="pl-1 pt-1 flex flex-wrap gap-1.5">
-                            {msg.project ? (
-                              <span className="px-2 py-0.5 border border-emerald-200 bg-emerald-50 text-[10px] font-semibold text-emerald-700 rounded-md">
-                                Đã gán: {msg.project.name || msg.project.id}
-                              </span>
-                            ) : (
-                              msg.projectIds?.map((pid) => {
-                                const pName = localProjects.find(x => x.id === pid)?.code || pid;
-                                return <span key={pid} className="px-2 py-0.5 border border-emerald-200 bg-emerald-50 text-[10px] font-semibold text-emerald-700 rounded-md">Đã gán: {pName}</span>;
-                              })
-                            )}
-                          </div>
-                        )}
                       </div>
                     </div>
                   );
                 })}
-                <div ref={messagesEndRef} />
               </div>
 
-              {/* Selection Floating Action Bar */}
               <AnimatePresence>
-                {selectedCount > 0 && (
-                  <motion.div
-                    initial={{ y: 20, opacity: 0 }}
-                    animate={{ y: 0, opacity: 1 }}
-                    exit={{ y: 20, opacity: 0 }}
-                    className="absolute bottom-6 left-1/2 -translate-x-1/2 bg-slate-900 text-white rounded-xl shadow-[0_8px_30px_rgb(0,0,0,0.12)] px-4 py-3 flex items-center gap-6 z-20 border border-slate-700/50"
-                  >
-                    <div className="flex items-center gap-2">
-                      <div className="w-6 h-6 rounded-full bg-indigo-500 text-xs font-bold flex items-center justify-center shadow-inner text-white">
-                        {selectedCount}
-                      </div>
-                      <span className="text-[13px] font-medium opacity-90">tin nhắn đã chọn</span>
-                    </div>
-                    
-                    <div className="w-[1px] h-5 bg-slate-700" />
-                    
-                    <div className="flex gap-2">
-                      <button onClick={clearAll} className="px-3 py-1.5 text-xs font-medium text-slate-300 hover:text-white transition">
-                        Bỏ chọn
-                      </button>
-                      <button 
-                        onClick={() => setIsMappingOpen(true)}
-                        className="px-4 py-1.5 text-[13px] font-semibold bg-indigo-600 hover:bg-indigo-500 text-white rounded-lg transition shadow-sm flex items-center gap-1 group"
-                      >
-                        Gán vào Project
-                        <ChevronRight size={14} className="group-hover:translate-x-0.5 transition-transform" />
-                      </button>
-                    </div>
+                {selectedCount > 0 ? (
+                  <motion.div initial={{ y: 20, opacity: 0 }} animate={{ y: 0, opacity: 1 }} exit={{ y: 20, opacity: 0 }} className="absolute bottom-6 left-1/2 -translate-x-1/2 bg-slate-900 text-white rounded-xl px-4 py-3 flex items-center gap-6 z-20">
+                    <span className="text-[13px] font-medium">{selectedCount} tin nhắn đã chọn</span>
+                    <button onClick={() => setIsMappingOpen(true)} className="px-4 py-1.5 text-[13px] font-semibold bg-indigo-600 hover:bg-indigo-500 text-white rounded-lg transition flex items-center gap-1">
+                      Gán vào Project <ChevronRight size={14} />
+                    </button>
                   </motion.div>
-                )}
+                ) : null}
               </AnimatePresence>
             </>
           )}
         </div>
 
-        {/* Column 3: Mapping Panel Drawer */}
         <AnimatePresence>
-          {isMappingOpen && (
+          {isMappingOpen ? (
             <MappingPanel
-              selectedMessages={selectedConversationMessages.filter(m => selectedIds.has(m.id))}
+              selectedMessages={selectedConversationMessages.filter((m) => selectedIds.has(m.id))}
               projects={localProjects}
               isSaving={saving}
               onClose={() => setIsMappingOpen(false)}
               onRemoveMessage={(id) => toggleSelection(id)}
-              onCreateProject={handleCreateProject}
+              onCreateProject={(code) => {
+                const id = `proj-${Date.now()}`;
+                setLocalProjects((prev) => [
+                  { id, code, name: code, ownerName: "", status: "new", lastUpdateAt: new Date().toISOString(), unreadCount: 0, summary: "", todoList: [] },
+                  ...prev,
+                ]);
+              }}
               onSaveMapping={handleSaveMapping}
             />
-          )}
+          ) : null}
         </AnimatePresence>
       </div>
 
-      {toastMessage && <Toast message={toastMessage} onClose={() => setToastMessage(null)} />}
+      {toastMessage ? <Toast message={toastMessage} onClose={() => setToastMessage(null)} /> : null}
     </div>
   );
 }

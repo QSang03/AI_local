@@ -10,9 +10,9 @@ export default function AppLayout({
   return (
     <AuthBootstrap>
       <OpenClawAiWidget />
-      <div className="min-h-screen md:flex">
+      <div className="min-h-screen md:flex min-w-0">
         <SideNav />
-        <main className="flex-1 p-4 md:p-8">{children}</main>
+        <main className="flex-1 min-w-0 p-4 md:p-8">{children}</main>
       </div>
     </AuthBootstrap>
   );

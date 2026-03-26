@@ -7,6 +7,7 @@ import {
   ChatMessage,
   CreateUserPayload,
   MessageThread,
+  InboxConversationSummary,
   OmniInboxData,
   Project,
   ProjectChatThread,
@@ -828,6 +829,214 @@ export interface OmniInboxQuery {
   offset?: number;
 }
 
+export interface InboxConversationsQuery {
+  channel_id?: number;
+  provider?: string;
+  include_ignored?: boolean;
+  limit?: number;
+  offset?: number;
+}
+
+export interface InboxMessagesQuery {
+  provider?: string;
+  conversation_id?: string | number;
+  include_ignored?: boolean;
+  limit?: number;
+  offset?: number;
+}
+
+function normalizeInboxMessage(input: unknown): OmniInboxData["messages"][number] {
+  const item = input as Record<string, unknown>;
+  const projectIdsRaw = item.projectIds ?? item.project_ids ?? [];
+  const projectIds = Array.isArray(projectIdsRaw)
+    ? projectIdsRaw.map((id: unknown) => String(id))
+    : [];
+
+  const rawChannelObj =
+    item.channel && typeof item.channel === "object"
+      ? (item.channel as Record<string, unknown>)
+      : undefined;
+  const rawConversationObj =
+    item.conversation && typeof item.conversation === "object"
+      ? (item.conversation as Record<string, unknown>)
+      : undefined;
+
+  const rawProviderVal = rawChannelObj?.provider ?? item.provider ?? item.channel ?? item.chan ?? "email";
+  const rawProvider = String(rawProviderVal ?? "email");
+  const channelMapped = rawProvider.includes("zalo")
+    ? ("zalo" as OmniInboxData["messages"][number]["channel"])
+    : rawProvider.includes("whatsapp")
+      ? ("whatsapp" as OmniInboxData["messages"][number]["channel"])
+      : ("email" as OmniInboxData["messages"][number]["channel"]);
+
+  const convId = rawConversationObj?.id ?? item.conversationId ?? item.conversation_id ?? item.id ?? "";
+  const senderRaw = item.sender ?? item.senderId ?? item.sender_id ?? item.srcId ?? "unknown";
+  const senderDisplay = item.senderDisplay ?? item.sender_display ?? senderRaw ?? "Unknown";
+  const externalId = String(item.external_id ?? item.externalId ?? (item.externalId === 0 ? "0" : undefined) ?? "");
+
+  const payloadObj = item.payload && typeof item.payload === "object" ? (item.payload as Record<string, unknown>) : {};
+  const emailBodyHtml = String(
+    item.body_html ?? item.bodyHtml ?? payloadObj.body_html ?? payloadObj.bodyHtml ?? "",
+  ).trim();
+  const normalizedContent =
+    emailBodyHtml && channelMapped === "email" ? "" : String(item.content ?? item.snippet ?? "");
+
+  return {
+    id: String(item.id ?? ""),
+    conversationId: String(convId),
+    channel: channelMapped,
+    senderId: String(senderRaw ?? "unknown"),
+    senderDisplay: String(senderDisplay ?? "Unknown"),
+    subject: String(item.subject ?? ""),
+    snippet: String(item.snippet ?? item.subject ?? ""),
+    content: normalizedContent,
+    bodyHtml: emailBodyHtml || undefined,
+    receivedAt: String(item.receivedAt ?? item.received_at ?? ""),
+    projectIds,
+    externalId: externalId || undefined,
+    rawChannel: rawChannelObj ?? null,
+    rawConversation: rawConversationObj ?? null,
+    project: item.project
+      ? {
+          id: (item.project as any).id,
+          name: (item.project as any).name,
+        }
+      : undefined,
+  };
+}
+
+function normalizeInboxConversation(input: unknown): InboxConversationSummary {
+  const item = input as Record<string, unknown>;
+  const channelObj =
+    item.channel && typeof item.channel === "object"
+      ? (item.channel as Record<string, unknown>)
+      : undefined;
+
+  return {
+    id: String(item.id ?? ""),
+    channelId: item.channel_id !== undefined ? String(item.channel_id) : undefined,
+    provider: String(channelObj?.provider ?? item.provider ?? ""),
+    name: String(item.name ?? item.subject ?? item.external_id ?? ""),
+    avatarUrl: item.avatar_url ? String(item.avatar_url) : undefined,
+    externalId: item.external_id ? String(item.external_id) : undefined,
+    type: item.type ? String(item.type) : undefined,
+    isIgnored: typeof item.is_ignored === "boolean" ? item.is_ignored : undefined,
+    createdAt: item.created_at ? String(item.created_at) : undefined,
+    updatedAt: item.updated_at ? String(item.updated_at) : undefined,
+    lastMessageAt: item.last_message_at ? String(item.last_message_at) : undefined,
+  };
+}
+
+export async function getInboxConversations(query?: InboxConversationsQuery): Promise<{
+  items: InboxConversationSummary[];
+  total?: number;
+}> {
+  if (!USE_MOCK && API_BASE_URL) {
+    const qs = new URLSearchParams();
+    if (query?.channel_id !== undefined) qs.set("channel_id", String(query.channel_id));
+    if (query?.provider) qs.set("provider", String(query.provider));
+    if (query?.include_ignored !== undefined) qs.set("include_ignored", String(query.include_ignored));
+    if (typeof query?.limit === "number") qs.set("limit", String(query.limit));
+    if (typeof query?.offset === "number") qs.set("offset", String(query.offset));
+
+    const raw = await requestJson<unknown>(`/conversations${qs.toString() ? `?${qs.toString()}` : ""}`);
+    const rawObject = raw && typeof raw === "object" ? (raw as Record<string, unknown>) : {};
+    const listRaw = Array.isArray(raw)
+      ? raw
+      : Array.isArray(rawObject.items)
+        ? (rawObject.items as unknown[])
+        : Array.isArray(rawObject.conversations)
+          ? (rawObject.conversations as unknown[])
+          : [];
+    const total = Number(rawObject.total ?? rawObject.count ?? rawObject.total_count ?? listRaw.length);
+    return {
+      items: listRaw.map(normalizeInboxConversation),
+      total: Number.isNaN(total) ? undefined : total,
+    };
+  }
+
+  await delay(120);
+  const grouped = new Map<string, typeof mockPlatformMessages>();
+  for (const msg of mockPlatformMessages) {
+    const arr = grouped.get(msg.conversationId) ?? [];
+    arr.push(msg);
+    grouped.set(msg.conversationId, arr);
+  }
+  const convs = Array.from(grouped.entries())
+    .map(([conversationId, items]) => {
+      const latest = [...items].sort((a, b) => b.receivedAt.localeCompare(a.receivedAt))[0];
+      return {
+        id: conversationId,
+        name: latest.subject || latest.snippet || latest.senderDisplay || conversationId,
+        provider:
+          latest.channel === "zalo"
+            ? "zalo_personal"
+            : latest.channel === "whatsapp"
+              ? "whatsapp_personal"
+              : "email",
+        lastMessageAt: latest.receivedAt,
+        isIgnored: false,
+      } as InboxConversationSummary;
+    })
+    .sort((a, b) => String(b.lastMessageAt ?? "").localeCompare(String(a.lastMessageAt ?? "")));
+
+  const filtered = query?.provider ? convs.filter((c) => c.provider === query.provider) : convs;
+  const limit = query?.limit ?? 20;
+  const offset = query?.offset ?? 0;
+  return {
+    items: filtered.slice(offset, offset + limit),
+    total: filtered.length,
+  };
+}
+
+export async function getInboxMessages(query?: InboxMessagesQuery): Promise<{
+  items: OmniInboxData["messages"];
+  total?: number;
+}> {
+  if (!USE_MOCK && API_BASE_URL) {
+    const qs = new URLSearchParams();
+    if (query?.provider) qs.set("provider", String(query.provider));
+    if (query?.conversation_id !== undefined) qs.set("conversation_id", String(query.conversation_id));
+    if (query?.include_ignored !== undefined) qs.set("include_ignored", String(query.include_ignored));
+    if (typeof query?.limit === "number") qs.set("limit", String(query.limit));
+    if (typeof query?.offset === "number") qs.set("offset", String(query.offset));
+    const raw = await requestJson<unknown>(`/messages${qs.toString() ? `?${qs.toString()}` : ""}`);
+    const rawObject = raw && typeof raw === "object" ? (raw as Record<string, unknown>) : {};
+    const listRaw = Array.isArray(raw)
+      ? raw
+      : Array.isArray(rawObject.messages)
+        ? (rawObject.messages as unknown[])
+        : Array.isArray(rawObject.items)
+          ? (rawObject.items as unknown[])
+          : [];
+    const total = Number(rawObject.total ?? rawObject.count ?? rawObject.total_count ?? listRaw.length);
+    return {
+      items: listRaw.map(normalizeInboxMessage),
+      total: Number.isNaN(total) ? undefined : total,
+    };
+  }
+
+  await delay(120);
+  let items = [...mockPlatformMessages];
+  if (query?.provider) {
+    items = items.filter((m) => {
+      const provider =
+        m.channel === "zalo" ? "zalo_personal" : m.channel === "whatsapp" ? "whatsapp_personal" : "email";
+      return provider === query.provider;
+    });
+  }
+  if (query?.conversation_id !== undefined) {
+    items = items.filter((m) => String(m.conversationId) === String(query.conversation_id));
+  }
+  items.sort((a, b) => b.receivedAt.localeCompare(a.receivedAt));
+  const offset = query?.offset ?? 0;
+  const limit = query?.limit ?? 20;
+  return {
+    items: items.slice(offset, offset + limit),
+    total: items.length,
+  };
+}
+
 export async function getOmniInboxData(query?: OmniInboxQuery): Promise<OmniInboxData> {
   if (!USE_MOCK && API_BASE_URL) {
     try {
@@ -839,60 +1048,6 @@ export async function getOmniInboxData(query?: OmniInboxQuery): Promise<OmniInbo
       if (typeof query?.offset === "number") qs.set("offset", String(query.offset));
       const qsStr = qs.toString();
       const raw = await requestJson<unknown>(`/messages${qsStr ? `?${qsStr}` : ""}`);
-
-      const normalizeMessage = (input: unknown): OmniInboxData["messages"][number] => {
-        const item = input as Record<string, unknown>;
-        const projectIdsRaw = item.projectIds ?? item.project_ids ?? [];
-        const projectIds = Array.isArray(projectIdsRaw)
-          ? projectIdsRaw.map((id: unknown) => String(id))
-          : [];
-
-        // Support nested `channel` and `conversation` objects returned by backend
-        const rawChannelObj = (item.channel && typeof item.channel === 'object') ? (item.channel as Record<string, unknown>) : undefined;
-        const rawConversationObj = (item.conversation && typeof item.conversation === 'object') ? (item.conversation as Record<string, unknown>) : undefined;
-
-        const rawProviderVal = rawChannelObj?.provider ?? item.provider ?? item.channel ?? item.chan ?? "email";
-        const rawProvider = String(rawProviderVal ?? "email");
-        const channelMapped = rawProvider.includes("zalo")
-          ? ("zalo" as OmniInboxData["messages"][number]["channel"]) 
-          : rawProvider.includes("whatsapp")
-          ? ("whatsapp" as OmniInboxData["messages"][number]["channel"]) 
-          : ("email" as OmniInboxData["messages"][number]["channel"]);
-
-        const convId = rawConversationObj?.id ?? item.conversationId ?? item.conversation_id ?? item.id ?? "";
-        const senderRaw = item.sender ?? item.senderId ?? item.sender_id ?? item.srcId ?? "unknown";
-        const senderDisplay = item.senderDisplay ?? item.sender_display ?? senderRaw ?? "Unknown";
-        const externalId = String(item.external_id ?? item.externalId ?? (item.externalId === 0 ? '0' : undefined) ?? "");
-
-        const payloadObj = (item.payload && typeof item.payload === 'object') ? (item.payload as Record<string, unknown>) : {};
-        const emailBodyHtml = String(
-          item.body_html ?? item.bodyHtml ?? payloadObj.body_html ?? payloadObj.bodyHtml ?? ""
-        ).trim();
-        const normalizedContent = emailBodyHtml && channelMapped === "email"
-          ? ""  // keep content empty to avoid fallback text duplication when HTML is used
-          : String(item.content ?? item.snippet ?? "");
-
-        return {
-          id: String(item.id ?? ""),
-          conversationId: String(convId),
-          channel: channelMapped,
-          senderId: String(senderRaw ?? "unknown"),
-          senderDisplay: String(senderDisplay ?? "Unknown"),
-          subject: String(item.subject ?? ""),
-          snippet: String(item.snippet ?? item.subject ?? ""),
-          content: normalizedContent,
-          bodyHtml: emailBodyHtml || undefined,
-          receivedAt: String(item.receivedAt ?? item.received_at ?? ""),
-          projectIds,
-          externalId: externalId || undefined,
-          rawChannel: rawChannelObj ?? null,
-          rawConversation: rawConversationObj ?? null,
-          project: item.project ? {
-            id: (item.project as any).id,
-            name: (item.project as any).name
-          } : undefined,
-        };
-      };
 
       const normalizeBlacklist = (input: unknown): OmniInboxData["blacklist"][number] => {
         const item = input as Record<string, unknown>;
@@ -930,7 +1085,7 @@ export async function getOmniInboxData(query?: OmniInboxQuery): Promise<OmniInbo
       const total = Number(rawObject.total ?? rawObject.count ?? rawObject.total_count ?? (Array.isArray(raw) ? raw.length : undefined));
 
       return {
-        messages: messageListRaw.map(normalizeMessage),
+        messages: messageListRaw.map(normalizeInboxMessage),
         blacklist: blacklistRaw.map(normalizeBlacklist),
         total: Number.isNaN(total) ? undefined : total,
       };
