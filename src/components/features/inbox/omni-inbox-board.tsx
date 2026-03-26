@@ -58,6 +58,13 @@ export function OmniInboxBoard({
   const [toastMessage, setToastMessage] = useState<string | null>(null);
   const [localProjects, setLocalProjects] = useState<Project[]>(projects ?? []);
   const [expandedMsgIds, setExpandedMsgIds] = useState<string[]>([]);
+  const projectNameById = useMemo(
+    () =>
+      new Map(
+        (localProjects ?? []).map((p) => [String(p.id), p.name || p.code || `Project #${p.id}`]),
+      ),
+    [localProjects],
+  );
 
   const [conversations, setConversations] = useState<InboxConversationSummary[]>(initialConversations ?? []);
   const [conversationOffset, setConversationOffset] = useState((initialConversations ?? []).length);
@@ -82,7 +89,8 @@ export function OmniInboxBoard({
   const convoListRef = useRef<HTMLDivElement | null>(null);
   const convoSentinelRef = useRef<HTMLDivElement | null>(null);
   const messageListRef = useRef<HTMLDivElement | null>(null);
-  const messageTopSentinelRef = useRef<HTMLDivElement | null>(null);
+  const shouldAutoScrollToLatestRef = useRef(false);
+  const prependScrollAnchorRef = useRef<{ conversationId: string; prevHeight: number; prevTop: number } | null>(null);
   const conversationFetchesRef = useRef<Set<string>>(new Set());
   const messageFetchesRef = useRef<Set<string>>(new Set());
   const initializedProviderRef = useRef<string | undefined>(undefined);
@@ -152,6 +160,15 @@ export function OmniInboxBoard({
       }));
       setMessagesLoading(true);
 
+      const list = messageListRef.current;
+      if (appendOlder && list) {
+        prependScrollAnchorRef.current = {
+          conversationId,
+          prevHeight: list.scrollHeight,
+          prevTop: list.scrollTop,
+        };
+      }
+
       try {
         const data = await getInboxMessages({
           provider: providerParam,
@@ -171,8 +188,9 @@ export function OmniInboxBoard({
         });
 
         const nextOffset = offset + data.items.length;
-        const total = data.total;
-        const hasMore = typeof total === "number" ? nextOffset < total : data.items.length === PAGE_SIZE;
+        // Do not trust `total` blindly; some providers return inconsistent totals.
+        // Continue paging while we still receive a full page.
+        const hasMore = data.items.length === PAGE_SIZE;
         setMessageMetaByConversation((prev) => ({
           ...prev,
           [conversationId]: { offset: nextOffset, hasMore, loading: false },
@@ -225,6 +243,40 @@ export function OmniInboxBoard({
   }, [selectedConversationId, messagesByConversation, loadConversationMessages]);
 
   useEffect(() => {
+    if (!selectedConversationId) return;
+    shouldAutoScrollToLatestRef.current = true;
+  }, [selectedConversationId]);
+
+  useEffect(() => {
+    if (!selectedConversationId) return;
+    if (!shouldAutoScrollToLatestRef.current) return;
+    const list = messageListRef.current;
+    if (!list) return;
+    const messageCount = messagesByConversation[selectedConversationId]?.length ?? 0;
+    if (messageCount <= 0) return;
+
+    requestAnimationFrame(() => {
+      list.scrollTo({ top: list.scrollHeight, behavior: "auto" });
+    });
+    shouldAutoScrollToLatestRef.current = false;
+  }, [selectedConversationId, messagesByConversation]);
+
+  useEffect(() => {
+    const anchor = prependScrollAnchorRef.current;
+    if (!anchor) return;
+    if (anchor.conversationId !== selectedConversationId) {
+      prependScrollAnchorRef.current = null;
+      return;
+    }
+    const list = messageListRef.current;
+    if (!list) return;
+    const nextHeight = list.scrollHeight;
+    if (nextHeight <= anchor.prevHeight) return;
+    list.scrollTop = anchor.prevTop + (nextHeight - anchor.prevHeight);
+    prependScrollAnchorRef.current = null;
+  }, [selectedConversationId, messagesByConversation]);
+
+  useEffect(() => {
     const root = convoListRef.current;
     const sentinel = convoSentinelRef.current;
     if (!root || !sentinel) return;
@@ -243,28 +295,6 @@ export function OmniInboxBoard({
     obs.observe(sentinel);
     return () => obs.disconnect();
   }, [conversationHasMore, conversationOffset, remoteLoading, loadConversationsPage]);
-
-  useEffect(() => {
-    const root = messageListRef.current;
-    const sentinel = messageTopSentinelRef.current;
-    if (!root || !sentinel || !selectedConversationId) return;
-
-    const obs = new IntersectionObserver(
-      (entries) => {
-        entries.forEach((entry) => {
-          if (!entry.isIntersecting) return;
-          const meta = messageMetaByConversation[selectedConversationId];
-          if (!meta?.loading && meta?.hasMore) {
-            void loadConversationMessages(selectedConversationId, true);
-          }
-        });
-      },
-      { root, rootMargin: "100px", threshold: 0.1 },
-    );
-
-    obs.observe(sentinel);
-    return () => obs.disconnect();
-  }, [selectedConversationId, messageMetaByConversation, loadConversationMessages]);
 
   const filteredConversations = useMemo(() => {
     return conversations.filter((c) => {
@@ -292,8 +322,18 @@ export function OmniInboxBoard({
     [selectedConversationId, messagesByConversation],
   );
 
+  const handleMessageListScroll = useCallback(() => {
+    const root = messageListRef.current;
+    if (!root || !selectedConversationId) return;
+    if (root.scrollTop > 48) return;
+    const meta = messageMetaByConversation[selectedConversationId];
+    if (!meta || meta.loading || !meta.hasMore) return;
+    void loadConversationMessages(selectedConversationId, true);
+  }, [selectedConversationId, messageMetaByConversation, loadConversationMessages]);
+
   const handleSelectConversation = (id: string) => {
     if (id === selectedConversationId) return;
+    shouldAutoScrollToLatestRef.current = true;
     setSelectedConversationId(id);
     clearAll();
     setIsMappingOpen(false);
@@ -373,9 +413,10 @@ export function OmniInboxBoard({
           <div className="p-3 border-b border-slate-100">
             <h2 className="text-sm font-semibold text-slate-800">Hội thoại ({filteredConversations.length})</h2>
           </div>
-          <div ref={convoListRef} className="flex-1 overflow-y-auto p-2 space-y-1 bg-slate-50/50 relative">
+          <div ref={convoListRef} className="flex-1 overflow-y-auto p-2 space-y-1 bg-slate-50/50 relative [scrollbar-gutter:stable]">
             {filteredConversations.map((c) => {
               const isSelected = selectedConversation?.id === c.id;
+              const loadedCount = (messagesByConversation[c.id] ?? []).length;
               const channel: MessageChannel =
                 channelFilter === "all"
                   ? "email"
@@ -385,13 +426,18 @@ export function OmniInboxBoard({
                 <button
                   key={c.id}
                   onClick={() => handleSelectConversation(c.id)}
-                  className={`block w-full text-left p-3 rounded-lg border transition ${
+                  className={`block w-full min-h-[78px] text-left p-3 rounded-lg border transition ${
                     isSelected ? "bg-indigo-50 border-indigo-400 border-l-[3px]" : "bg-white border-slate-200 hover:border-slate-300"
                   }`}
                 >
                   <div className="flex justify-between gap-2">
                     <p className="text-[13px] font-semibold truncate">{c.name || c.id}</p>
-                    <span className={`px-1 py-[1px] rounded text-[9px] border ${cConf.bg} ${cConf.text}`}>{cConf.label}</span>
+                    <div className="flex items-center gap-1.5 shrink-0">
+                      <span className="inline-flex h-5 min-w-5 items-center justify-center rounded-full bg-slate-200 px-1.5 text-[10px] font-semibold text-slate-700">
+                        {loadedCount}
+                      </span>
+                      <span className={`px-1 py-[1px] rounded text-[9px] border ${cConf.bg} ${cConf.text}`}>{cConf.label}</span>
+                    </div>
                   </div>
                   <p className="text-[11px] text-slate-500 mt-1">{timeAgo(c.lastMessageAt ?? c.updatedAt ?? c.createdAt ?? "")}</p>
                 </button>
@@ -443,8 +489,11 @@ export function OmniInboxBoard({
                 </div>
               </div>
 
-              <div ref={messageListRef} className="flex-1 overflow-y-auto px-6 py-6 space-y-6 pb-28 relative bg-[#F8FAFC] min-w-0">
-                <div ref={messageTopSentinelRef} className="h-2 w-full" />
+              <div
+                ref={messageListRef}
+                onScroll={handleMessageListScroll}
+                className="flex-1 overflow-y-auto px-6 py-6 space-y-6 pb-28 relative bg-[#F8FAFC] min-w-0"
+              >
                 {messagesLoading ? <p className="text-xs text-slate-500 text-center">Đang tải tin nhắn cũ...</p> : null}
                 {selectedConversationMessages.map((msg) => {
                   const checked = selectedIds.has(msg.id);
@@ -469,6 +518,23 @@ export function OmniInboxBoard({
                             }
                           />
                         </div>
+                        {((msg.projectIds?.length ?? 0) > 0 || msg.project?.name) ? (
+                          <div className="mt-1.5 flex flex-wrap gap-1.5">
+                            {(msg.projectIds ?? []).map((pid) => (
+                              <span
+                                key={`${msg.id}-${pid}`}
+                                className="inline-flex items-center rounded-full border border-indigo-200 bg-indigo-50 px-2 py-0.5 text-[11px] font-medium text-indigo-700"
+                              >
+                                {projectNameById.get(String(pid)) ?? `Project #${pid}`}
+                              </span>
+                            ))}
+                            {msg.project?.name && !(msg.projectIds ?? []).some((pid) => String(pid) === String(msg.project?.id)) ? (
+                              <span className="inline-flex items-center rounded-full border border-indigo-200 bg-indigo-50 px-2 py-0.5 text-[11px] font-medium text-indigo-700">
+                                {msg.project.name}
+                              </span>
+                            ) : null}
+                          </div>
+                        ) : null}
                       </div>
                     </div>
                   );

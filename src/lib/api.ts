@@ -848,9 +848,16 @@ export interface InboxMessagesQuery {
 function normalizeInboxMessage(input: unknown): OmniInboxData["messages"][number] {
   const item = input as Record<string, unknown>;
   const projectIdsRaw = item.projectIds ?? item.project_ids ?? [];
-  const projectIds = Array.isArray(projectIdsRaw)
+  const projectIdSingle = item.project_id ?? (item.project && typeof item.project === "object" ? (item.project as Record<string, unknown>).id : undefined);
+  const projectIdsFromList = Array.isArray(projectIdsRaw)
     ? projectIdsRaw.map((id: unknown) => String(id))
     : [];
+  const projectIds = [
+    ...new Set([
+      ...projectIdsFromList,
+      ...(projectIdSingle !== undefined && projectIdSingle !== null ? [String(projectIdSingle)] : []),
+    ]),
+  ];
 
   const rawChannelObj =
     item.channel && typeof item.channel === "object"
