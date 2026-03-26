@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { useMemo, useState } from "react";
+import { useMemo, useState, useEffect } from "react";
 import { Project } from "@/types/domain";
 import { getProjectAIOutput } from "@/lib/api";
 import { createProject, deleteProject, getProjects } from "@/lib/api";
@@ -30,6 +30,8 @@ export function ProjectDashboard({ projects }: ProjectDashboardProps) {
   const [newDesc, setNewDesc] = useState("");
   const [creating, setCreating] = useState(false);
 
+
+
   const stats = useMemo(() => {
     return {
       total: localProjects.length,
@@ -57,6 +59,7 @@ export function ProjectDashboard({ projects }: ProjectDashboardProps) {
 
   return (
     <div className="space-y-4">
+
       <section className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
         <article className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
           <p className="text-xs font-semibold uppercase tracking-wide text-slate-500">

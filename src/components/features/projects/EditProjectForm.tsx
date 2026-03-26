@@ -2,6 +2,7 @@
 
 import React, { useEffect, useState } from 'react';
 import { Project } from '@/types/domain';
+import { getProjectSummary } from '@/lib/api';
 
 type OwnerOption = { id: string; name: string };
 
@@ -13,11 +14,24 @@ interface EditProjectFormProps {
   onSave: (p: Project) => void;
   loading?: boolean;
 }
+
+function getTodayDateString() {
+  const now = new Date();
+  const y = now.getFullYear();
+  const m = String(now.getMonth() + 1).padStart(2, '0');
+  const d = String(now.getDate()).padStart(2, '0');
+  return `${y}-${m}-${d}`;
+}
+
 export default function EditProjectForm({ project, onCancel, onSave, loading = false }: EditProjectFormProps) {
   const ext = project as ExtendedProject | null;
   const [name, setName] = useState(ext?.name ?? '');
   const [description, setDescription] = useState(ext?.description ?? '');
   const [status, setStatus] = useState<Project['status']>(ext?.status ?? 'new');
+  const [selectedDate, setSelectedDate] = useState(getTodayDateString());
+  const [summarySource, setSummarySource] = useState<'quick' | 'daily'>('quick');
+  const [loadingSummary, setLoadingSummary] = useState(false);
+  const [summaryError, setSummaryError] = useState<string | null>(null);
   const [errors, setErrors] = useState<Record<string,string>>({});
 
   // Sync states from project prop when project changes.
@@ -27,8 +41,64 @@ export default function EditProjectForm({ project, onCancel, onSave, loading = f
       setName(e?.name ?? '');
       setDescription(e?.description ?? '');
       setStatus(e?.status ?? 'new');
+      setSelectedDate(getTodayDateString());
+      setSummarySource('quick');
+      setSummaryError(null);
     }, 0);
   }, [project]);
+
+  async function loadQuickSummary(projectId: string) {
+    setLoadingSummary(true);
+    setSummaryError(null);
+    try {
+      const res = await getProjectSummary(projectId);
+      const summaryContent = (res?.content ?? '').trim();
+      if (summaryContent) setDescription(summaryContent);
+      setSummarySource('quick');
+    } catch {
+      setSummaryError('Khong tai duoc quick summary');
+    } finally {
+      setLoadingSummary(false);
+    }
+  }
+
+  useEffect(() => {
+    const projectId = String(project?.id ?? '').trim();
+    if (!projectId || projectId.startsWith('temp-')) return;
+
+    let mounted = true;
+    void (async () => {
+      await loadQuickSummary(projectId);
+    })();
+
+    return () => {
+      mounted = false;
+    };
+  }, [project?.id]);
+
+  async function handleLoadSummaryByDate() {
+    const projectId = String(project?.id ?? '').trim();
+    if (!projectId || !selectedDate) return;
+
+    setLoadingSummary(true);
+    setSummaryError(null);
+    try {
+      const res = await getProjectSummary(projectId, selectedDate);
+      const summaryContent = (res?.content ?? '').trim();
+      setDescription(summaryContent || 'No summary available for selected date');
+      setSummarySource('daily');
+    } catch {
+      setSummaryError('Khong tai duoc summary theo ngay da chon');
+    } finally {
+      setLoadingSummary(false);
+    }
+  }
+
+  async function handleResetQuickSummary() {
+    const projectId = String(project?.id ?? '').trim();
+    if (!projectId) return;
+    await loadQuickSummary(projectId);
+  }
 
   // only name, description, status are editable
 
@@ -58,6 +128,34 @@ export default function EditProjectForm({ project, onCancel, onSave, loading = f
 
         <label className="text-sm font-medium">Description</label>
         <textarea value={description} onChange={(e) => setDescription(e.target.value)} className="w-full rounded border px-3 py-2 h-28" />
+        <div className="flex flex-wrap items-center gap-2">
+          <input
+            type="date"
+            value={selectedDate}
+            onChange={(e) => setSelectedDate(e.target.value)}
+            className="rounded border px-3 py-2 text-sm"
+          />
+          <button
+            type="button"
+            onClick={handleLoadSummaryByDate}
+            disabled={loadingSummary || !selectedDate}
+            className="rounded bg-indigo-600 px-3 py-2 text-sm text-white disabled:opacity-60"
+          >
+            {loadingSummary ? 'Loading...' : 'Load by date'}
+          </button>
+          <button
+            type="button"
+            onClick={() => { void handleResetQuickSummary(); }}
+            className="rounded border px-3 py-2 text-sm"
+          >
+            Quick summary
+          </button>
+        </div>
+        <div className="text-xs text-gray-500">
+          {summarySource === 'quick' ? 'Dang hien thi quick summary' : `Dang hien thi summary ngay ${selectedDate}`}
+        </div>
+        {loadingSummary ? <div className="text-xs text-gray-500">Loading project summary...</div> : null}
+        {summaryError ? <div className="text-xs text-rose-600">{summaryError}</div> : null}
 
         {/* Owner is not editable here (creator is owner) */}
 

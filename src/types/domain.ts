@@ -123,12 +123,17 @@ export interface PlatformMessage {
   subject: string;
   snippet: string;
   content: string;
+  bodyHtml?: string;
   receivedAt: string;
   projectIds: string[];
   // Optional fields to preserve raw backend payloads / identifiers
   externalId?: string;
   rawChannel?: Record<string, unknown> | null;
   rawConversation?: Record<string, unknown> | null;
+  project?: {
+    id: number | string;
+    name: string;
+  };
 }
 
 export interface BlacklistEntry {
@@ -143,6 +148,7 @@ export interface BlacklistEntry {
 export interface OmniInboxData {
   messages: PlatformMessage[];
   blacklist: BlacklistEntry[];
+  total?: number;
 }
 
 export interface SaveMessageProjectMappingPayload {

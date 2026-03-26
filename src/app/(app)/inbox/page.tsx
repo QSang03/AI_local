@@ -2,7 +2,6 @@
 
 import { useEffect, useState } from "react";
 import { OmniInboxBoard } from "@/components/features/inbox/omni-inbox-board";
-import { PageHeader } from "@/components/ui/page-header";
 import { getOmniInboxData, getProjects } from "@/lib/api";
 import { BlacklistEntry, PlatformMessage, Project } from "@/types/domain";
 
@@ -22,7 +21,7 @@ export default function InboxPage() {
 
       try {
         const [inboxData, projectsPaged] = await Promise.all([
-          getOmniInboxData(),
+          getOmniInboxData({ limit: 50, offset: 0 }),
           getProjects({ page: 1, pageSize: 200 }),
         ]);
 
@@ -52,11 +51,7 @@ export default function InboxPage() {
   }, []);
 
   return (
-    <div className="space-y-6">
-      <PageHeader
-        title="Unified Inbox & Mapping"
-        subtitle="Tong hop du lieu Email, Zalo, WhatsApp; gan tin nhan vao project va quan ly blacklist nguoi gui."
-      />
+    <div className="h-[calc(100vh-2rem)] md:h-[calc(100vh-4rem)] flex flex-col">
       {loading ? <p className="text-sm text-slate-500">Dang tai inbox...</p> : null}
       {error ? (
         <div className="rounded-2xl border border-rose-200 bg-rose-50 p-4 text-sm text-rose-700">{error}</div>

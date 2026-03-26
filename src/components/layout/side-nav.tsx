@@ -12,9 +12,7 @@ const navItems = [
   { href: "/inbox", label: "Unified Inbox" },
   { href: "/channels", label: "Config Channel" },
   { href: "/users", label: "Manager User" },
-  { href: "/marking", label: "Marking" },
   { href: "/chat", label: "Chat Agent" },
-  { href: "/profile", label: "Profile" },
 ];
 
 export function SideNav() {

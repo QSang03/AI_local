@@ -1,15 +1,18 @@
-"use client";
+const fs = require('fs');
 
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+const content = `"use client";
+
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { AnimatePresence, motion } from "framer-motion";
 import { formatDistanceToNow } from "date-fns";
 import { vi } from "date-fns/locale";
 import { Search, Info, Mail, Phone, MessageCircle, X, ChevronLeft, ChevronRight, Ban, User, MoreVertical, ThumbsUp } from "lucide-react";
-import { getOmniInboxData, addBlacklistEntry, removeBlacklistEntry, saveMessageProjectMapping, ignoreConversation } from "@/lib/api";
+import { getOmniInboxData, addBlacklistEntry, removeBlacklistEntry, saveMessageProjectMapping } from "@/lib/api";
 import { BlacklistEntry, MessageChannel, PlatformMessage, Project } from "@/types/domain";
 
 import Toast from "@/components/ui/Toast";
 import Loader from "@/components/ui/Loader";
+import ShortcutHint from "@/components/ui/ShortcutHint";
 
 import { MessageRenderer } from "./components/MessageRenderer";
 import { MappingPanel } from "./components/MappingPanel";
@@ -79,20 +82,9 @@ export function OmniInboxBoard({ initialMessages, initialBlacklist, projects }: 
   const [blacklist, setBlacklist] = useState<BlacklistEntry[]>(initialBlacklist ?? []);
   const [remoteLoading, setRemoteLoading] = useState(false);
   
-  // Initialize channelFilter from localStorage if available
-  const [channelFilter, setChannelFilter] = useState<ChannelFilter>(() => {
-    if (typeof window !== 'undefined') {
-      const saved = localStorage.getItem('omniInboxChannelFilter');
-      if (saved === 'email' || saved === 'zalo' || saved === 'whatsapp' || saved === 'all') {
-        return saved as ChannelFilter;
-      }
-    }
-    return "email";
-  });
-  
+  const [channelFilter, setChannelFilter] = useState<ChannelFilter>("all");
   const [searchQuery, setSearchQuery] = useState("");
   const [hideBlacklisted, setHideBlacklisted] = useState(true);
-  const [ignoredConversations, setIgnoredConversations] = useState<Set<string>>(new Set());
   
   const [selectedConversationId, setSelectedConversationId] = useState<string | null>(null);
   
@@ -107,30 +99,11 @@ export function OmniInboxBoard({ initialMessages, initialBlacklist, projects }: 
   const [expandedMsgIds, setExpandedMsgIds] = useState<string[]>([]);
   
   const [listPage, setListPage] = useState(1);
-  const [conversationPageSize] = useState(50);
-
-  const [apiPage, setApiPage] = useState(1);
-  const [apiPageSize] = useState(50);
-  const [apiTotal, setApiTotal] = useState<number | null>(null);
-  const [apiHasMore, setApiHasMore] = useState(false);
+  const [pageSize, setPageSize] = useState(50);
 
   const { selectedIds, selectedCount, toggleSelection, selectAll, clearAll } = useMessageSelection();
-  const convoListRef = useRef<HTMLDivElement | null>(null);
-  const messagesRef = useRef<PlatformMessage[]>(initialMessages ?? []);
-  const sentinelRef = useRef<HTMLDivElement | null>(null);
-  
-  // Track which apiPage numbers are currently being fetched to avoid duplicate calls
-  const loadingPagesRef = useRef<Set<number>>(new Set());
-  const apiPageRef = useRef<number>(apiPage);
-  useEffect(() => { apiPageRef.current = apiPage; }, [apiPage]);
 
-  const consecutiveEmptyLoadsRef = useRef<number>(0);
-
-  useEffect(() => {
-    messagesRef.current = messages;
-  }, [messages]);
-
-  const blacklistedSet = useMemo(() => new Set(blacklist.map((e) => `${e.channel}:${e.senderId}`)), [blacklist]);
+  const blacklistedSet = useMemo(() => new Set(blacklist.map((e) => \`\${e.channel}:\${e.senderId}\`)), [blacklist]);
 
   const filteredMessages = useMemo(() => {
     return messages.filter((m) => {
@@ -139,142 +112,37 @@ export function OmniInboxBoard({ initialMessages, initialBlacklist, projects }: 
         m.subject.toLowerCase().includes(searchQuery.toLowerCase()) ||
         m.senderDisplay.toLowerCase().includes(searchQuery.toLowerCase()) ||
         m.snippet.toLowerCase().includes(searchQuery.toLowerCase());
-      const isBlacklisted = blacklistedSet.has(`${m.channel}:${m.senderId}`) || ignoredConversations.has(m.conversationId);
+      const isBlacklisted = blacklistedSet.has(\`\${m.channel}:\${m.senderId}\`);
       const byBlacklist = hideBlacklisted ? !isBlacklisted : true;
       return byChannel && byQuery && byBlacklist;
     });
-  }, [messages, channelFilter, searchQuery, blacklistedSet, hideBlacklisted, ignoredConversations]);
+  }, [messages, channelFilter, searchQuery, blacklistedSet, hideBlacklisted]);
 
-  const providerParam = useMemo<undefined | string>(() => {
-    if (channelFilter === "all") return undefined;
-    if (channelFilter === "email") return "email";
-    if (channelFilter === "zalo") return "zalo_personal";
-    if (channelFilter === "whatsapp") return "whatsapp_personal";
-    return undefined;
-  }, [channelFilter]);
+  // Fetch API on channel change
+  useEffect(() => {
+    let mounted = true;
+    async function loadFiltered() {
+      const providerParam = channelFilter === "all" ? undefined
+        : channelFilter === "email" ? "email"
+        : channelFilter === "zalo" ? "zalo_personal"
+        : channelFilter === "whatsapp" ? "whatsapp_personal" : undefined;
 
-  const loadInboxPage = useCallback(async (page: number) => {
-    // Avoid duplicate fetches for the same page
-    if (loadingPagesRef.current.has(page)) {
-      try { console.debug && console.debug('[OmniInbox] skip duplicate page fetch', page); } catch {}
-      return;
-    }
-    loadingPagesRef.current.add(page);
-    setRemoteLoading(true);
+      if (!providerParam) return;
 
-    try {
-      const offset = (page - 1) * apiPageSize;
-      const data = await getOmniInboxData({
-        provider: providerParam,
-        limit: apiPageSize,
-        offset,
-        include_ignored: false,
-      });
-
-      const nextMessages = data.messages ?? [];
-      // Debug logging to help investigate missing/incrementing messages
-      // Check: page, offset, number of messages returned, total reported by API
+      setRemoteLoading(true);
       try {
-        // eslint-disable-next-line no-console
-        console.debug('[OmniInbox] loadInboxPage', { page, offset, nextCount: nextMessages.length, total: data.total, provider: providerParam });
-      } catch (e) {
-        // ignore logging errors
+        const data = await getOmniInboxData(providerParam);
+        if (!mounted) return;
+        setMessages(data.messages ?? []);
+        setBlacklist(data.blacklist ?? []);
+      } catch (err) {
+      } finally {
+        if (mounted) setRemoteLoading(false);
       }
-      const existing = page === 1 ? new Set<string>() : new Set(messagesRef.current.map((m) => m.id));
-      const dedupedNextMessages = page === 1 ? nextMessages : nextMessages.filter((m) => !existing.has(m.id));
-      const uniqueAdded = dedupedNextMessages.length;
-
-      setMessages((prev) => {
-        if (page === 1) return nextMessages;
-        return [...prev, ...dedupedNextMessages];
-      });
-
-      setBlacklist(data.blacklist ?? []);
-      setApiPage(page);
-
-      const total = data.total ?? null;
-      setApiTotal(total);
-
-      // Track consecutive empty loads (no unique items added)
-      if (uniqueAdded === 0) {
-        consecutiveEmptyLoadsRef.current = (consecutiveEmptyLoadsRef.current || 0) + 1;
-      } else {
-        consecutiveEmptyLoadsRef.current = 0;
-      }
-
-      // Offset pagination should continue while API still returns a full batch or we added unique items.
-      // Do not rely solely on `total` because some backends return inconsistent totals.
-      // Stop after a few consecutive empty loads to avoid infinite loops.
-      const maxEmptyRepeats = 3;
-      const hasMoreMessages = (nextMessages.length === apiPageSize || uniqueAdded > 0) && (consecutiveEmptyLoadsRef.current < maxEmptyRepeats);
-
-      try {
-        // eslint-disable-next-line no-console
-        console.debug('[OmniInbox] paginationState', { page, nextMessagesLength: nextMessages.length, uniqueAdded, consecutiveEmptyLoads: consecutiveEmptyLoadsRef.current, hasMoreMessages });
-      } catch {}
-
-      setApiHasMore(hasMoreMessages);
-    } catch (err) {
-      // swallow, we keep old data; optionally show toast
-    } finally {
-      loadingPagesRef.current.delete(page);
-      setRemoteLoading(false);
     }
-  }, [apiPageSize, providerParam]);
-
-  useEffect(() => {
-    setApiPage(1);
-    setListPage(1);
-    setApiTotal(null);
-    setApiHasMore(false);
-    void loadInboxPage(1);
-  }, [providerParam, loadInboxPage]);
-
-  // Persist channelFilter to localStorage whenever it changes
-  useEffect(() => {
-    if (typeof window !== 'undefined') {
-      localStorage.setItem('omniInboxChannelFilter', channelFilter);
-    }
+    void loadFiltered();
+    return () => { mounted = false; };
   }, [channelFilter]);
-
-  const handleLoadMore = useCallback(() => {
-    if (remoteLoading || !apiHasMore) return;
-    const nextPage = apiPageRef.current + 1;
-    if (loadingPagesRef.current.has(nextPage)) return;
-    void loadInboxPage(nextPage);
-  }, [remoteLoading, apiHasMore, loadInboxPage, apiPage]);
-
-  useEffect(() => {
-    const container = convoListRef.current;
-    if (!container) return;
-
-    const onScroll = () => {
-      if (remoteLoading || !apiHasMore) return;
-      const distanceToBottom = container.scrollHeight - container.scrollTop - container.clientHeight;
-      if (distanceToBottom < 120) {
-        handleLoadMore();
-      }
-    };
-
-    container.addEventListener("scroll", onScroll, { passive: true });
-    return () => container.removeEventListener("scroll", onScroll);
-  }, [apiHasMore, remoteLoading, handleLoadMore]);
-
-  // When list remains near bottom after a load, continue loading next offset page automatically
-  // so users don't need to manually scroll again.
-  useEffect(() => {
-    if (remoteLoading || !apiHasMore) return;
-    const container = convoListRef.current;
-    if (!container) return;
-
-    const distanceToBottom = container.scrollHeight - container.scrollTop - container.clientHeight;
-    if (distanceToBottom < 120) {
-      const timer = window.setTimeout(() => {
-        handleLoadMore();
-      }, 80);
-      return () => window.clearTimeout(timer);
-    }
-  }, [apiPage, apiHasMore, remoteLoading, handleLoadMore]);
 
   const filteredConversations = useMemo(() => {
     const grouped = new Map<string, PlatformMessage[]>();
@@ -289,7 +157,7 @@ export function OmniInboxBoard({ initialMessages, initialBlacklist, projects }: 
       const latest = sorted[0];
       const pIds = Array.from(new Set(convoMessages.flatMap((item) => item.projectIds ?? [])));
       const computedChannel = latest.channel ?? mapProviderToChannel((latest.rawChannel as any)?.provider);
-      const computedThreadTitle = (latest.rawConversation as any)?.name || latest.subject || latest.snippet || latest.senderDisplay || "(No title)";
+      const computedThreadTitle = latest.subject || (latest.rawConversation as any)?.name || latest.snippet || "(No title)";
 
       return {
         id,
@@ -312,13 +180,13 @@ export function OmniInboxBoard({ initialMessages, initialBlacklist, projects }: 
     return conversations.sort((a, b) => b.latestReceivedAt.localeCompare(a.latestReceivedAt));
   }, [filteredMessages]);
 
-  const totalPages = Math.max(1, Math.ceil(filteredConversations.length / conversationPageSize));
+  const totalPages = Math.max(1, Math.ceil(filteredConversations.length / pageSize));
   const safePage = Math.min(listPage, totalPages);
   
   const pagedConversations = useMemo(() => {
-    const start = (safePage - 1) * conversationPageSize;
-    return filteredConversations.slice(start, start + conversationPageSize);
-  }, [filteredConversations, conversationPageSize, safePage]);
+    const start = (safePage - 1) * pageSize;
+    return filteredConversations.slice(start, start + pageSize);
+  }, [filteredConversations, pageSize, safePage]);
 
   const selectedConversation = useMemo(
     () => filteredConversations.find((c) => c.id === selectedConversationId) ?? null,
@@ -331,38 +199,6 @@ export function OmniInboxBoard({ initialMessages, initialBlacklist, projects }: 
       .sort((a, b) => a.receivedAt.localeCompare(b.receivedAt));
   }, [filteredMessages, selectedConversation]);
 
-  const messagesEndRef = useRef<HTMLDivElement | null>(null);
-
-  useEffect(() => {
-    if (selectedConversationId && messagesEndRef.current) {
-      messagesEndRef.current.scrollIntoView({ behavior: "auto" });
-    }
-  }, [selectedConversationId, selectedConversationMessages.length]);
-
-  // IntersectionObserver to trigger loading more when user reaches the bottom.
-  useEffect(() => {
-    const root = convoListRef.current;
-    const sentinel = sentinelRef.current;
-    if (!root || !sentinel) return;
-
-    const obs = new IntersectionObserver((entries) => {
-      entries.forEach((entry) => {
-        if (entry.isIntersecting) {
-          if (!remoteLoading && apiHasMore) {
-            handleLoadMore();
-          }
-        }
-      });
-    }, {
-      root,
-      rootMargin: '200px',
-      threshold: 0.1,
-    });
-
-    obs.observe(sentinel);
-    return () => obs.disconnect();
-  }, [handleLoadMore, remoteLoading, apiHasMore]);
-
   const handleSelectConversation = (id: string) => {
     if (id !== selectedConversationId) {
       setSelectedConversationId(id);
@@ -372,12 +208,12 @@ export function OmniInboxBoard({ initialMessages, initialBlacklist, projects }: 
   };
 
   const handleCreateProject = (code: string) => {
-    const id = `proj-${Date.now()}`;
+    const id = \`proj-\${Date.now()}\`;
     const newProj: Project = {
       id, code, name: code, ownerName: "", status: "new", lastUpdateAt: new Date().toISOString(), unreadCount: 0, summary: "", todoList: [],
     };
     setLocalProjects((prev) => [newProj, ...prev]);
-    setToastMessage(`Tạo project ${code} thành công.`);
+    setToastMessage(\`Tạo project \${code} thành công.\`);
   };
 
   const handleSaveMapping = async (projectIds: string[]) => {
@@ -389,54 +225,14 @@ export function OmniInboxBoard({ initialMessages, initialBlacklist, projects }: 
     
     const result = await saveMessageProjectMapping({ messageIds: msgIds, projectIds });
     if (result.ok) {
-      setMessages((prev) => prev.map((m) => msgIds.includes(m.id) ? { ...m, projectIds: [...new Set([...(m.projectIds || []), ...projectIds])] } : m));
-      setUndoStack((prev) => [{ id: `map-${Date.now()}`, messageIds: msgIds, toProjectIds: projectIds, previousByMessage, createdAt: Date.now() }, ...prev].slice(0, 30));
+      setMessages((prev) => prev.map((m) => msgIds.includes(m.id) ? { ...m, projectIds: [...projectIds] } : m));
+      setUndoStack((prev) => [{ id: \`map-\${Date.now()}\`, messageIds: msgIds, toProjectIds: projectIds, previousByMessage, createdAt: Date.now() }, ...prev].slice(0, 30));
       setRedoStack([]);
       clearAll();
       setIsMappingOpen(false);
     }
     setToastMessage(result.message || "Đã gán tin nhắn vào project thành công.");
     setSaving(false);
-  };
-
-  const handleToggleIgnoreConversation = async (conversationId: string) => {
-    const currentState = ignoredConversations.has(conversationId);
-    const newState = !currentState;
-    
-    // Optimistic update
-    setIgnoredConversations(prev => {
-      const next = new Set(prev);
-      if (newState) next.add(conversationId);
-      else next.delete(conversationId);
-      return next;
-    });
-
-    try {
-      const res = await ignoreConversation(conversationId, newState);
-      if (!res.ok) {
-        // revert optimistic update
-        setIgnoredConversations(prev => {
-          const next = new Set(prev);
-          if (!newState) next.add(conversationId);
-          else next.delete(conversationId);
-          return next;
-        });
-        setToastMessage(res.message);
-      } else {
-        setToastMessage(newState ? "Đã chặn hội thoại" : "Đã bỏ chặn");
-        if (newState && selectedConversationId === conversationId) {
-          setSelectedConversationId(null);
-        }
-      }
-    } catch (err) {
-      // revert
-      setIgnoredConversations(prev => {
-        const next = new Set(prev);
-        if (!newState) next.add(conversationId);
-        else next.delete(conversationId);
-        return next;
-      });
-    }
   };
 
   // Undo / Redo keybinds
@@ -465,7 +261,7 @@ export function OmniInboxBoard({ initialMessages, initialBlacklist, projects }: 
   }, [undoStack, redoStack]);
 
   return (
-    <div className="flex flex-col h-full bg-slate-50 relative overflow-hidden font-sans rounded-2xl shadow-sm border border-slate-200">
+    <div className="flex flex-col h-full bg-slate-50 relative overflow-hidden font-sans rounded-2xl shadow-sm border border-slate-200 mx-2 mb-2">
       {/* Page Header */}
       <header className="bg-white border-b border-slate-200 px-6 py-4 shrink-0 shadow-sm z-10 relative">
         <h1 className="text-2xl font-bold text-slate-900 tracking-tight">Unified Inbox & Mapping</h1>
@@ -476,19 +272,19 @@ export function OmniInboxBoard({ initialMessages, initialBlacklist, projects }: 
       <div className="bg-white border-b border-slate-200 px-6 py-3 flex items-center justify-between shrink-0 sticky top-0 z-10">
         {/* Channel Tabs */}
         <div className="flex bg-slate-100 p-1 rounded-lg border border-slate-200">
-          {(['email', 'zalo', 'whatsapp'] as const).map(ch => {
+          {(['all', 'email', 'zalo', 'whatsapp'] as const).map(ch => {
             const active = channelFilter === ch;
-            const ChIcon = CHANNEL_COLORS[ch].icon;
+            const ChIcon = ch === 'all' ? Mail : CHANNEL_COLORS[ch].icon;
             return (
               <button
                 key={ch}
                 onClick={() => { setChannelFilter(ch); setListPage(1); }}
-                className={`flex items-center gap-1.5 px-3 py-1.5 rounded-md text-sm font-medium transition-all ${
+                className={\`flex items-center gap-1.5 px-3 py-1.5 rounded-md text-sm font-medium transition-all \${
                   active ? "bg-indigo-500 text-white shadow-sm" : "text-slate-600 hover:bg-slate-200"
-                }`}
+                }\`}
               >
                 <ChIcon size={14} className={active ? "text-white" : "text-slate-500"} />
-                {ch.charAt(0).toUpperCase() + ch.slice(1)}
+                {ch === 'all' ? "Tất cả" : ch.charAt(0).toUpperCase() + ch.slice(1)}
               </button>
             );
           })}
@@ -523,8 +319,8 @@ export function OmniInboxBoard({ initialMessages, initialBlacklist, projects }: 
                 checked={hideBlacklisted}
                 onChange={(e) => setHideBlacklisted(e.target.checked)}
               />
-              <div className={`w-9 h-5 rounded-full transition-colors ${hideBlacklisted ? "bg-indigo-500" : "bg-slate-300"}`}></div>
-              <div className={`absolute left-0.5 top-0.5 bg-white w-4 h-4 rounded-full transition-transform shadow-sm ${hideBlacklisted ? "translate-x-4" : ""}`}></div>
+              <div className={\`w-9 h-5 rounded-full transition-colors \${hideBlacklisted ? "bg-indigo-500" : "bg-slate-300"}\`}></div>
+              <div className={\`absolute left-0.5 top-0.5 bg-white w-4 h-4 rounded-full transition-transform shadow-sm \${hideBlacklisted ? "translate-x-4" : ""}\`}></div>
             </div>
             <span className="text-sm font-medium text-slate-700 select-none group-hover:text-slate-900 flex items-center gap-1">
               <Ban size={14} className={hideBlacklisted ? "text-rose-500" : "text-slate-400"} /> Ẩn blacklist
@@ -539,15 +335,10 @@ export function OmniInboxBoard({ initialMessages, initialBlacklist, projects }: 
         {/* Column 1: Conversation List (320px wide) */}
         <div className="w-[320px] bg-white border-r border-slate-200 flex flex-col shrink-0 z-0 h-full">
           <div className="p-3 border-b border-slate-100 flex items-center justify-between shadow-sm shrink-0">
-              <div className="flex flex-col">
-              <div className="flex items-center gap-2">
-                <h2 className="text-sm font-semibold text-slate-800">Hội thoại</h2>
-                <span className="px-2 py-0.5 text-xs font-semibold bg-indigo-50 text-indigo-600 rounded-full leading-tight">
-                  {filteredConversations.length} cuộc
-                </span>
-              </div>
-              <span className="text-[11px] text-slate-500 mt-0.5">
-                Đã tải {messages.length} tin ({filteredConversations.length} cuộc){apiTotal ? ` / ${apiTotal}` : ""} • APIPg: {apiPage} • hasMore: {apiHasMore ? "yes" : "no"}
+            <div className="flex items-center gap-2">
+              <h2 className="text-sm font-semibold text-slate-800">Hội thoại</h2>
+              <span className="px-2 py-0.5 text-xs font-semibold bg-indigo-50 text-indigo-600 rounded-full leading-tight">
+                {filteredConversations.length} cuộc
               </span>
             </div>
             <div className="flex items-center gap-1 text-slate-500 text-sm">
@@ -569,7 +360,7 @@ export function OmniInboxBoard({ initialMessages, initialBlacklist, projects }: 
             </div>
           </div>
           
-          <div ref={convoListRef} className="flex-1 overflow-y-auto p-2 space-y-1 bg-slate-50/50 relative">
+          <div className="flex-1 overflow-y-auto p-2 space-y-1 bg-slate-50/50 relative">
             {remoteLoading ? (
               Array.from({ length: 5 }).map((_, i) => (
                 <div key={i} className="h-20 bg-slate-100 animate-pulse rounded-lg border border-slate-200/50" />
@@ -586,49 +377,48 @@ export function OmniInboxBoard({ initialMessages, initialBlacklist, projects }: 
               pagedConversations.map((c) => {
                 const isSelected = selectedConversation?.id === c.id;
                 const cConf = CHANNEL_COLORS[c.channel] || CHANNEL_COLORS.email;
-                const isBlacklisted = blacklistedSet.has(`${c.channel}:${c.senderId}`);
+                const isBlacklisted = blacklistedSet.has(\`\${c.channel}:\${c.senderId}\`);
                 
                 return (
                   <div
                     key={c.id}
                     onClick={() => handleSelectConversation(c.id)}
-                    className={`block w-full text-left p-3 rounded-lg border cursor-pointer group transition duration-150 ${
+                    className={\`block w-full text-left p-3 rounded-lg border cursor-pointer group transition duration-150 \${
                       isSelected 
                         ? 'bg-indigo-50 border-indigo-400 border-l-[3px] shadow-sm ml-[1px]' 
                         : 'bg-white border-slate-200 hover:border-slate-300 hover:shadow-sm'
-                    }`}
+                    }\`}
                   >
                     <div className="flex gap-3">
                       <div className="relative shrink-0 mt-0.5">
                         <div className="w-10 h-10 rounded-full bg-gradient-to-br from-slate-200 to-slate-300 flex items-center justify-center text-slate-600 font-bold text-sm shadow-inner ring-1 ring-white">
-                          {c.threadTitle.charAt(0).toUpperCase()}
+                          {c.senderDisplay.charAt(0).toUpperCase()}
                         </div>
-                        <div className={`absolute -bottom-1 -right-1 px-1 py-[2px] rounded uppercase font-bold text-[9px] border border-white shadow-sm tracking-wide ${cConf.bg} ${cConf.text}`}>
+                        <div className={\`absolute -bottom-1 -right-1 px-1 py-[2px] rounded uppercase font-bold text-[9px] border border-white shadow-sm tracking-wide \${cConf.bg} \${cConf.text}\`}>
                           {cConf.label}
                         </div>
                       </div>
                       
                       <div className="flex-1 min-w-0">
                         <div className="flex justify-between items-start mb-0.5">
-                          <h3 className={`text-[13px] font-semibold truncate pr-2 ${isSelected ? 'text-slate-900' : 'text-slate-800 group-hover:text-indigo-600 transition-colors'}`}>
-                            {c.threadTitle}
+                          <h3 className={\`text-[13px] font-semibold truncate pr-2 \${isSelected ? 'text-slate-900' : 'text-slate-800 group-hover:text-indigo-600 transition-colors'}\`}>
+                            {c.senderDisplay}
                           </h3>
                           <span className="text-[11px] text-slate-400 whitespace-nowrap tabular-nums font-medium" title={c.latestReceivedAt}>
                             {timeAgo(c.latestReceivedAt)}
                           </span>
                         </div>
                         
-                        <p className={`text-[12px] leading-[1.35] truncate transition-colors ${isSelected ? 'text-slate-700' : 'text-slate-500'}`}>
-                          <span className="font-medium mr-1">{c.senderDisplay}:</span>
+                        <p className={\`text-[12px] leading-[1.35] truncate transition-colors \${isSelected ? 'text-slate-700' : 'text-slate-500'}\`}>
                           {c.latestSnippet || "Chưa có nội dung"}
                         </p>
                         
                         <div className="flex items-center justify-between mt-2 h-4">
                           <div className="flex gap-1.5 flex-wrap">
                             {c.projectIds.map(pid => (
-                              <span key={pid} className="inline-flex items-center gap-1 w-2 h-2 rounded-full bg-emerald-500" title={`Đã gán dự án: ${pid}`} />
+                              <span key={pid} className="inline-flex items-center gap-1 w-2 h-2 rounded-full bg-emerald-500" title={\`Đã gán dự án: \${pid}\`} />
                             ))}
-                            {isBlacklisted && <span title="Đã chặn"><Ban size={12} className="text-rose-500" /></span>}
+                            {isBlacklisted && <Ban size={12} className="text-rose-500" title="Đã chặn" />}
                           </div>
                           {c.messageCount > 1 && (
                             <span className="inline-flex items-center justify-center min-w-[18px] px-1.5 h-[18px] rounded-full bg-slate-100 border border-slate-200 text-[10px] font-bold text-slate-500">
@@ -642,21 +432,7 @@ export function OmniInboxBoard({ initialMessages, initialBlacklist, projects }: 
                 );
               })
             )}
-            <div ref={sentinelRef} className="w-full h-2" />
           </div>
-
-          {apiHasMore && (
-            <div className="px-3 py-2 border-t border-slate-100 bg-slate-50 text-center">
-              <button
-                onClick={handleLoadMore}
-                disabled={remoteLoading}
-                className="inline-flex items-center gap-1 px-3 py-1.5 text-xs font-semibold text-slate-700 bg-white border border-slate-300 rounded-md hover:bg-slate-100 disabled:opacity-40"
-              >
-                Tải thêm tin nhắn
-              </button>
-            </div>
-          )}
-
         </div>
 
         {/* Column 2: Message Detail Panel (flex-1) */}
@@ -696,11 +472,7 @@ export function OmniInboxBoard({ initialMessages, initialBlacklist, projects }: 
                     </div>
                   </div>
                   <div className="flex items-center gap-2 shrink-0">
-                    <button 
-                      onClick={() => handleToggleIgnoreConversation(selectedConversation.id)} 
-                      title={ignoredConversations.has(selectedConversation.id) ? "Bỏ chặn" : "Chặn hội thoại"} 
-                      className={`p-2 rounded-lg border border-slate-200 transition shadow-sm ${ignoredConversations.has(selectedConversation.id) ? "text-rose-600 bg-rose-50" : "text-slate-400 hover:text-rose-600 hover:bg-rose-50 bg-white"}`}
-                    >
+                    <button title="Blacklist" className="p-2 rounded-lg border border-slate-200 text-slate-400 hover:text-rose-600 hover:bg-rose-50 transition shadow-sm bg-white">
                       <Ban size={16} />
                     </button>
                     <button title="User Profile" className="p-2 rounded-lg border border-slate-200 text-slate-400 hover:text-slate-700 hover:bg-slate-50 transition shadow-sm bg-white">
@@ -721,16 +493,16 @@ export function OmniInboxBoard({ initialMessages, initialBlacklist, projects }: 
                   return (
                     <div 
                       key={msg.id} 
-                      className={`relative flex gap-3 group transition-colors p-2 -mx-2 rounded-xl ${
+                      className={\`relative flex gap-3 group transition-colors p-2 -mx-2 rounded-xl \${
                         checked ? "bg-indigo-50/60 ring-1 ring-indigo-200" : "hover:bg-slate-100/50"
-                      }`}
+                      }\`}
                     >
                       <div className="pt-2 shrink-0 w-6 flex justify-center">
                         <input
                           type="checkbox"
                           checked={checked}
                           onChange={() => toggleSelection(msg.id)}
-                          className={`w-[18px] h-[18px] rounded border-slate-300 text-indigo-600 focus:ring-indigo-500 cursor-pointer transition ${checked ? "opacity-100" : "opacity-0 group-hover:opacity-100"}`}
+                          className={\`w-[18px] h-[18px] rounded border-slate-300 text-indigo-600 focus:ring-indigo-500 cursor-pointer transition \${checked ? "opacity-100" : "opacity-0 group-hover:opacity-100"}\`}
                         />
                       </div>
                       <div className="shrink-0 pt-0.5">
@@ -748,31 +520,23 @@ export function OmniInboxBoard({ initialMessages, initialBlacklist, projects }: 
                         <div className="inline-block bg-white border border-slate-200 rounded-2xl rounded-tl-sm px-4 py-3 max-w-[95%] shadow-[0_1px_2px_rgba(0,0,0,0.02)]">
                           <MessageRenderer 
                             content={msg.content} 
-                            bodyHtml={msg.bodyHtml}
                             isExpanded={isExpanded} 
                             onToggleExpand={() => setExpandedMsgIds(p => p.includes(msg.id) ? p.filter(x => x !== msg.id) : [...p, msg.id])} 
                           />
                         </div>
 
-                        {(msg.project || (msg.projectIds && msg.projectIds.length > 0)) && (
+                        {msg.projectIds && msg.projectIds.length > 0 && (
                           <div className="pl-1 pt-1 flex flex-wrap gap-1.5">
-                            {msg.project ? (
-                              <span className="px-2 py-0.5 border border-emerald-200 bg-emerald-50 text-[10px] font-semibold text-emerald-700 rounded-md">
-                                Đã gán: {msg.project.name || msg.project.id}
-                              </span>
-                            ) : (
-                              msg.projectIds?.map((pid) => {
-                                const pName = localProjects.find(x => x.id === pid)?.code || pid;
-                                return <span key={pid} className="px-2 py-0.5 border border-emerald-200 bg-emerald-50 text-[10px] font-semibold text-emerald-700 rounded-md">Đã gán: {pName}</span>;
-                              })
-                            )}
+                            {msg.projectIds.map((pid) => {
+                              const pName = localProjects.find(x => x.id === pid)?.code || pid;
+                              return <span key={pid} className="px-2 py-0.5 border border-emerald-200 bg-emerald-50 text-[10px] font-semibold text-emerald-700 rounded-md">Đã gán: {pName}</span>;
+                            })}
                           </div>
                         )}
                       </div>
                     </div>
                   );
                 })}
-                <div ref={messagesEndRef} />
               </div>
 
               {/* Selection Floating Action Bar */}
@@ -828,7 +592,11 @@ export function OmniInboxBoard({ initialMessages, initialBlacklist, projects }: 
         </AnimatePresence>
       </div>
 
+      <ShortcutHint />
       {toastMessage && <Toast message={toastMessage} onClose={() => setToastMessage(null)} />}
     </div>
   );
 }
+`;
+
+fs.writeFileSync('C:/Users/sangnq/Downloads/openclaw-local/workspace/src/components/features/inbox/omni-inbox-board.tsx', content);

@@ -1,5 +1,6 @@
 import { SideNav } from "@/components/layout/side-nav";
 import { AuthBootstrap } from "@/components/auth/auth-bootstrap";
+import OpenClawAiWidget from "@/components/OpenClawAiWidget";
 
 export default function AppLayout({
   children,
@@ -8,6 +9,7 @@ export default function AppLayout({
 }>) {
   return (
     <AuthBootstrap>
+      <OpenClawAiWidget />
       <div className="min-h-screen md:flex">
         <SideNav />
         <main className="flex-1 p-4 md:p-8">{children}</main>

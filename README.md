@@ -37,6 +37,8 @@ Luu y:
   - false: goi backend that, neu loi se fallback mock cho GET
 - NEXT_PUBLIC_CHAT_BRIDGE_WS_URL
 	- WebSocket URL cho chat-bridge (vi du: ws://localhost:3001/ws)
+- NEXT_PUBLIC_CHAT_WS_URL
+	- WebSocket URL ket noi truc tiep backend chat (vi du: ws://192.168.117.64:8080/api/chat/ws)
 - NEXT_PUBLIC_SALE_ID
 	- Session ID cua sale tren openclaw bridge (vi du: sale_sang)
 - NEXT_PUBLIC_SALE_NAME

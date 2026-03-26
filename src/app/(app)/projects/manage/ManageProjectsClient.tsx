@@ -8,6 +8,8 @@ import { updateProject, getProjects, getOwners, deleteProject } from '@/lib/api'
 import EditProjectForm from '@/components/features/projects/EditProjectForm';
 import ConfirmationModal from '@/components/ui/ConfirmationModal';
 import CreateProjectModal from '@/components/features/projects/CreateProjectModal';
+import { Search, Plus, Edit2, Trash2, ChevronDown, X, AlertTriangle } from 'lucide-react';
+import { formatDistanceToNow } from 'date-fns';
 
 
 
@@ -27,11 +29,13 @@ export default function ManageProjectsClient({ initialProjects }: { initialProje
   const [ownerQuery, setOwnerQuery] = useState('');
   const [ownerSuggestions, setOwnerSuggestions] = useState<Array<{ id: string; name: string }>>([]);
   const [globalAnnounce, setGlobalAnnounce] = useState<string | undefined>(undefined);
+  const [viewMode, setViewMode] = useState<'card' | 'table'>('table');
   const [total, setTotal] = useState(initialProjects?.length ?? 0);
   const [loadingPage, setLoadingPage] = useState(false);
-
-  // owners derived from projects kept intentionally; suggestions are fetched via getOwners
-
+  
+  // Derive whether any filters are active
+  const hasActiveFilters = search.trim() !== '' || statusFilter !== '' || ownerFilterId !== '';
+  
   const totalPages = Math.max(1, Math.ceil(total / rowsPerPage));
   const pageItems = projects;
   const prevPageRef = useRef<number>(page);
@@ -146,30 +150,44 @@ export default function ManageProjectsClient({ initialProjects }: { initialProje
   function getStatusBadgeClass(status?: string) {
     switch (status) {
       case 'active':
-        return 'bg-green-100 text-green-800';
+        return 'bg-emerald-100 text-emerald-700 border border-emerald-200';
       case 'urgent':
       case 'pending':
-        return 'bg-amber-100 text-amber-800';
+        return 'bg-amber-100 text-amber-700 border border-amber-200';
       case 'closed':
-        return 'bg-gray-100 text-gray-700';
+        return 'bg-slate-100 text-slate-700 border border-slate-200';
+      case 'new':
+        return 'bg-blue-100 text-blue-700 border border-blue-200';
       default:
-        return 'bg-gray-100 text-gray-700';
+        return 'bg-slate-100 text-slate-700 border border-slate-200';
     }
+  }
+
+  function getStatusColor(status?: string): string {
+    switch (status) {
+      case 'active': return '#10b981';
+      case 'urgent': case 'pending': return '#f59e0b';
+      case 'closed': return '#64748b';
+      case 'new': return '#3b82f6';
+      default: return '#64748b';
+    }
+  }
+
+  function getStatusDot(status?: string) {
+    const colors = {
+      'active': 'bg-emerald-500',
+      'urgent': 'bg-amber-500',
+      'pending': 'bg-amber-500',
+      'closed': 'bg-slate-400',
+      'new': 'bg-blue-500',
+    };
+    return colors[status as keyof typeof colors] || 'bg-slate-400';
   }
 
   function relativeTime(dt: string | undefined) {
     if (!dt) return '-';
     try {
-      const d = new Date(dt);
-      const diff = Date.now() - d.getTime();
-      const sec = Math.floor(diff / 1000);
-      if (sec < 60) return `${sec}s ago`;
-      const min = Math.floor(sec / 60);
-      if (min < 60) return `${min}m ago`;
-      const hr = Math.floor(min / 60);
-      if (hr < 24) return `${hr}h ago`;
-      const days = Math.floor(hr / 24);
-      return `${days}d ago`;
+      return formatDistanceToNow(new Date(dt), { addSuffix: true });
     } catch {
       return dt;
     }
@@ -193,201 +211,449 @@ export default function ManageProjectsClient({ initialProjects }: { initialProje
   }
 
   return (
-    <div className="space-y-4">
-      {/* Page header */}
-      <div className="flex items-center justify-between">
-        <div className="flex items-center gap-4">
-          <h1 className="text-2xl font-bold text-gray-900">Manage Projects</h1>
-          <div className="text-sm text-gray-600 rounded-full bg-gray-50 px-3 py-1">Total: {total}</div>
-        </div>
+    <div className="space-y-6 px-2 py-6 md:px-6">
+      {/* Page Header */}
+      <div className="flex flex-col items-start justify-between gap-4 xs:flex-row xs:items-center">
         <div className="flex items-center gap-3">
-          <button
-            onClick={() => setShowCreate(true)}
-            className="inline-flex items-center gap-2 rounded-md bg-indigo-600 px-4 py-2 text-white hover:bg-indigo-700"
-            aria-label="Create new project"
-          >
-            + New Project
-          </button>
+          <h1 className="text-3xl font-bold text-slate-800">Projects</h1>
+          <span className="inline-flex items-center rounded-full bg-slate-100 px-3 py-1 text-sm font-medium text-slate-700">
+            {total} project{total !== 1 ? 's' : ''}
+          </span>
         </div>
+        <button
+          onClick={() => setShowCreate(true)}
+          className="inline-flex items-center gap-2 rounded-lg bg-indigo-600 px-4 py-2.5 text-white font-medium hover:bg-indigo-700 focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:ring-offset-2 transition-colors"
+          aria-label="Create new project"
+        >
+          <Plus size={18} />
+          <span>New Project</span>
+        </button>
       </div>
 
-      {/* Toolbar: search + filters */}
-      <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
-        <div className="flex items-center gap-3 w-full md:w-2/3">
-          <div className="relative w-full">
-            <input
-              value={search}
-              onChange={(e) => setSearch(e.target.value)}
-              placeholder="Search by name or code"
-              className="w-full rounded-md border border-slate-200 bg-white px-3 py-2 text-sm shadow-sm"
-              disabled={loadingPage}
-              aria-label="Search projects"
-            />
-          </div>
-          <select
-            value={statusFilter}
-            onChange={(e) => setStatusFilter(e.target.value)}
-            className="rounded-md border border-slate-200 bg-white px-3 py-2 text-sm"
+      {/* Filter Bar */}
+      <div className="space-y-3 rounded-xl border border-slate-200 bg-white p-4 shadow-sm md:flex md:items-center md:gap-3 md:space-y-0">
+        {/* Search */}
+        <div className="relative flex-1">
+          <Search className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" size={18} />
+          <input
+            value={search}
+            onChange={(e) => setSearch(e.target.value)}
+            placeholder="Search by name or code..."
+            className="w-full rounded-lg border border-slate-200 bg-white pl-10 pr-3 py-2 text-sm placeholder-slate-400 focus:border-indigo-500 focus:outline-none focus:ring-1 focus:ring-indigo-500 transition-colors"
             disabled={loadingPage}
-            aria-label="Filter by status"
-          >
-            <option value="">All status</option>
-            <option value="new">New</option>
-            <option value="active">Active</option>
-            <option value="urgent">Urgent</option>
-            <option value="closed">Closed</option>
-          </select>
+            aria-label="Search projects"
+          />
+        </div>
 
-          <div className="relative">
-            <input
-              placeholder="Filter by owner"
-              value={ownerQuery}
-              onChange={(e) => {
-                setOwnerQuery(e.target.value);
-                // clear selected owner id when typing
-                setOwnerFilterId("");
-              }}
-              className="rounded-md border border-slate-200 bg-white px-3 py-2 text-sm"
+        {/* Status Filter - Custom Dropdown */}
+        <div className="relative flex-shrink-0">
+          <div className="relative group">
+            <button
+              className="inline-flex items-center gap-2 rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm font-medium text-slate-700 hover:bg-slate-50 focus:outline-none focus:ring-1 focus:ring-indigo-500 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
               disabled={loadingPage}
-              aria-label="Filter by owner"
-            />
-            {ownerSuggestions.length > 0 && (
-              <ul className="absolute left-0 right-0 z-20 mt-1 max-h-40 overflow-auto rounded border bg-white">
-                {ownerSuggestions.map((s) => (
-                  <li
-                    key={s.id}
-                    onClick={() => {
-                      setOwnerQuery(s.name);
-                      setOwnerFilterId(s.id);
-                      setOwnerSuggestions([]);
-                    }}
-                    className="cursor-pointer px-3 py-2 hover:bg-slate-100"
-                  >
-                    {s.name}
-                  </li>
-                ))}
-              </ul>
-            )}
+              aria-label="Filter by status"
+            >
+              <span className={`h-2 w-2 rounded-full ${statusFilter ? getStatusDot(statusFilter) : 'bg-slate-300'}`} />
+              {statusFilter ? statusFilter.charAt(0).toUpperCase() + statusFilter.slice(1) : 'All Status'}
+              <ChevronDown size={16} />
+            </button>
+            <div className="absolute right-0 top-full z-20 mt-1 hidden rounded-lg border border-slate-200 bg-white shadow-lg group-hover:block">
+              {['All Status', 'new', 'active', 'urgent', 'closed'].map((status) => (
+                <button
+                  key={status}
+                  onClick={() => setStatusFilter(status === 'All Status' ? '' : status)}
+                  className={`flex w-full items-center gap-2 px-3 py-2 text-sm text-left hover:bg-slate-100 first:rounded-t-lg last:rounded-b-lg transition-colors ${
+                    (status === 'All Status' ? statusFilter === '' : statusFilter === status) ? 'bg-indigo-50 text-indigo-700' : 'text-slate-700'
+                  }`}
+                >
+                  {status !== 'All Status' && <span className={`h-2 w-2 rounded-full ${getStatusDot(status)}`} />}
+                  {status}
+                </button>
+              ))}
+            </div>
           </div>
         </div>
 
-        <div className="flex items-center gap-2">
-          {loadingPage ? <div className="text-sm text-gray-500">Loading…</div> : null}
-          <button
-            onClick={() => {
-              setSearch("");
-              setStatusFilter("");
+        {/* Owner Filter */}
+        <div className="relative flex-shrink-0">
+          <input
+            placeholder="Filter by owner"
+            value={ownerQuery}
+            onChange={(e) => {
+              setOwnerQuery(e.target.value);
               setOwnerFilterId("");
-              setOwnerQuery("");
-              setPage(1);
             }}
-            className="rounded-md border border-slate-200 bg-white px-3 py-2 text-sm"
-            aria-label="Clear filters"
+            className="w-full rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm placeholder-slate-400 focus:border-indigo-500 focus:outline-none focus:ring-1 focus:ring-indigo-500 transition-colors disabled:opacity-50 disabled:cursor-not-allowed md:w-48"
             disabled={loadingPage}
-          >
-            Clear
-          </button>
+            aria-label="Filter by owner"
+          />
+          {ownerSuggestions.length > 0 && (
+            <ul className="absolute left-0 right-0 top-full z-20 mt-1 max-h-40 overflow-auto rounded-lg border border-slate-200 bg-white shadow-lg">
+              {ownerSuggestions.map((s) => (
+                <li
+                  key={s.id}
+                  onClick={() => {
+                    setOwnerQuery(s.name);
+                    setOwnerFilterId(s.id);
+                    setOwnerSuggestions([]);
+                  }}
+                  className="cursor-pointer px-3 py-2 text-sm text-slate-700 hover:bg-slate-100 first:rounded-t-lg last:rounded-b-lg transition-colors"
+                >
+                  {s.name}
+                </li>
+              ))}
+            </ul>
+          )}
+        </div>
+
+        {/* Clear Filters & View Toggle */}
+        <div className="flex items-center gap-2">
+          {hasActiveFilters && (
+            <button
+              onClick={() => {
+                setSearch("");
+                setStatusFilter("");
+                setOwnerFilterId("");
+                setOwnerQuery("");
+                setPage(1);
+              }}
+              className="text-sm text-indigo-600 hover:text-indigo-700 font-medium transition-colors"
+              aria-label="Clear filters"
+              disabled={loadingPage}
+            >
+              Clear
+            </button>
+          )}
+          {loadingPage && <span className="text-xs text-slate-500">Loading…</span>}
         </div>
       </div>
 
-      <div className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
-        <div className="overflow-x-auto">
-          <table className="w-full table-auto text-sm">
-            <thead className="bg-gray-50 sticky top-0">
-              <tr className="text-left text-xs text-gray-500 uppercase tracking-wider">
-                <th className="px-3 py-3 w-16 text-center">No.</th>
-                <th className="px-3 py-3">Name</th>
-                <th className="px-3 py-3">Owner</th>
-                <th className="px-3 py-3">Status</th>
-                <th className="px-3 py-3">Updated</th>
-                <th className="px-3 py-3 text-right">Actions</th>
-              </tr>
-            </thead>
-            <tbody>
-              {loadingPage ? (
-                // skeleton rows
-                Array.from({ length: rowsPerPage }).map((_, i) => (
-                  <tr key={i} className={`${i % 2 === 0 ? 'bg-white' : 'bg-gray-50'} animate-pulse`}>
-                    <td className="px-3 py-4 text-center">&nbsp;</td>
-                    <td className="px-3 py-4"><div className="h-4 w-3/4 rounded bg-gray-200" /></td>
-                    <td className="px-3 py-4"><div className="h-4 w-1/2 rounded bg-gray-200" /></td>
-                    <td className="px-3 py-4"><div className="h-4 w-20 rounded bg-gray-200" /></td>
-                    <td className="px-3 py-4"><div className="h-4 w-24 rounded bg-gray-200" /></td>
-                    <td className="px-3 py-4 text-right"><div className="h-6 w-16 rounded bg-gray-200 inline-block" /></td>
-                  </tr>
-                ))
-              ) : pageItems.length === 0 ? (
-                <tr>
-                  <td colSpan={6} className="px-6 py-8 text-center text-sm text-gray-500">
-                    No projects found. Create your first project!
-                  </td>
-                </tr>
-              ) : (
-                pageItems.map((p, idx) => {
-                  const rowClass = idx % 2 === 0 ? 'bg-white' : 'bg-gray-50';
+      {/* View Toggle & Content */}
+      <div className="space-y-4">
+        {/* View Toggle */}
+        <div className="flex justify-end gap-2">
+          <button
+            onClick={() => setViewMode('card')}
+            className={`rounded-lg px-3 py-2 text-sm font-medium transition-colors ${
+              viewMode === 'card'
+                ? 'bg-indigo-600 text-white'
+                : 'bg-slate-100 text-slate-700 hover:bg-slate-200'
+            }`}
+            aria-label="Card view"
+          >
+            Card
+          </button>
+          <button
+            onClick={() => setViewMode('table')}
+            className={`rounded-lg px-3 py-2 text-sm font-medium transition-colors ${
+              viewMode === 'table'
+                ? 'bg-indigo-600 text-white'
+                : 'bg-slate-100 text-slate-700 hover:bg-slate-200'
+            }`}
+            aria-label="Table view"
+          >
+            Table
+          </button>
+        </div>
+
+        {/* Card View */}
+        {viewMode === 'card' && (
+          <div>
+            {loadingPage ? (
+              <div className="grid gap-4 md:grid-cols-2">
+                {Array.from({ length: rowsPerPage }).map((_, i) => (
+                  <div key={i} className="rounded-xl border border-slate-200 bg-white p-4 shadow-sm animate-pulse">
+                    <div className="mb-3 flex items-start justify-between">
+                      <div className="h-6 w-2/3 rounded bg-slate-200" />
+                      <div className="h-6 w-16 rounded bg-slate-200" />
+                    </div>
+                    <div className="mb-3 h-4 w-1/2 rounded bg-slate-200" />
+                    <div className="h-4 w-full rounded bg-slate-200" />
+                  </div>
+                ))}
+              </div>
+            ) : pageItems.length === 0 ? (
+              <div className="rounded-xl border-2 border-dashed border-slate-300 bg-slate-50 py-12 text-center">
+                <p className="text-slate-500">No projects found. Create your first project!</p>
+              </div>
+            ) : (
+              <div className="grid gap-4 md:grid-cols-2">
+                {pageItems.map((p) => {
                   const ownerName = typeof p.ownerName === 'string' ? p.ownerName : '';
-                  const initials = ownerName ? ownerName.split(' ').map((s) => s[0]).join('').slice(0,2).toUpperCase() : 'U';
-                    const displayIndex = (page - 1) * rowsPerPage + idx + 1;
+                  const initials = ownerName
+                    ? ownerName
+                        .split(' ')
+                        .map((s) => s[0])
+                        .join('')
+                        .slice(0, 2)
+                        .toUpperCase()
+                    : 'U';
+
                   return (
-                    <tr key={p.id} className={`${rowClass} hover:bg-gray-100`}>
-                        <td className="px-3 py-3 text-center align-middle text-xs font-medium">{displayIndex}</td>
-                      <td className="px-3 py-3 align-middle">
-                        {(!p.id || String(p.id).startsWith('temp-')) ? (
-                          <button title={p.id ? `Temp project (id: ${p.id})` : 'Temp project'} onClick={() => setEditing(p)} className="text-indigo-600 font-semibold hover:underline">
-                            {p.name}
-                          </button>
-                        ) : (
-                          <Link title={`Project ID: ${p.id}`} href={`/projects/${p.id}`} className="text-indigo-600 font-semibold hover:underline">{p.name}</Link>
-                        )}
-                      </td>
-                      <td className="px-3 py-3 align-middle">
-                        <div className="flex items-center gap-2">
-                          <div className="h-8 w-8 flex flex-shrink-0 items-center justify-center rounded-full bg-gray-200 text-sm font-semibold text-gray-700 leading-none">
-                            {initials}
-                          </div>
-                          <div className="text-sm text-gray-700">{ownerName}</div>
-                        </div>
-                      </td>
-                      <td className="px-3 py-3 align-middle">
-                        <span className={`inline-flex items-center rounded-full px-2 py-1 text-xs font-medium ${getStatusBadgeClass(p.status)}`}>
+                    <div
+                      key={p.id}
+                      className="group rounded-xl border border-slate-200 bg-white p-4 shadow-sm hover:border-indigo-200 hover:shadow-md transition-all"
+                    >
+                      {/* Header */}
+                      <div className="mb-3 flex items-start justify-between gap-2">
+                        <Link
+                          href={`/projects/${p.id}`}
+                          className="flex-1 text-base font-semibold text-indigo-700 hover:text-indigo-800 line-clamp-2 transition-colors"
+                        >
+                          {p.name}
+                        </Link>
+                        <span
+                          className={`flex-shrink-0 inline-flex items-center rounded-full px-2.5 py-0.5 text-xs font-medium ${getStatusBadgeClass(
+                            p.status
+                          )}`}
+                        >
                           {p.status}
                         </span>
-                      </td>
-                      <td className="px-3 py-3 align-middle text-sm text-gray-600">{relativeTime(p.lastUpdateAt)}</td>
-                      <td className="px-3 py-3 align-middle text-right">
-                        <div className="relative inline-block text-left">
-                          <button onClick={() => setEditing(p)} title="Edit" aria-label={`Edit ${p.name}`} className="rounded bg-slate-100 px-2 py-1 text-xs mr-2">✎</button>
-                          <button onClick={() => setConfirmDeleteId(p.id)} title="Delete" aria-label={`Delete ${p.name}`} className="rounded bg-rose-50 px-2 py-1 text-xs">🗑</button>
+                      </div>
+
+                      {/* Owner */}
+                      <div className="mb-3 flex items-center gap-2">
+                        <div className="flex h-8 w-8 flex-shrink-0 items-center justify-center rounded-full bg-indigo-100 text-xs font-semibold text-indigo-700">
+                          {initials}
                         </div>
+                        <span className="text-sm text-slate-700">{ownerName || 'Unassigned'}</span>
+                      </div>
+
+                      {/* Description */}
+                      {p.description && (
+                        <p className="mb-3 text-sm text-slate-600 line-clamp-2">
+                          {typeof p.description === 'string' ? p.description : ''}
+                        </p>
+                      )}
+
+                      {/* Footer */}
+                      <div className="flex items-center justify-between pt-3 border-t border-slate-200">
+                        <span className="text-xs text-slate-500">{relativeTime(p.lastUpdateAt)}</span>
+                        <div className="flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
+                          <button
+                            onClick={() => setEditing(p)}
+                            className="rounded-lg p-1.5 text-slate-600 hover:bg-slate-100 hover:text-slate-900 transition-colors"
+                            title="Edit"
+                            aria-label={`Edit ${p.name}`}
+                          >
+                            <Edit2 size={16} />
+                          </button>
+                          <button
+                            onClick={() => setConfirmDeleteId(p.id)}
+                            className="rounded-lg p-1.5 text-slate-600 hover:bg-red-50 hover:text-red-600 transition-colors"
+                            title="Delete"
+                            aria-label={`Delete ${p.name}`}
+                          >
+                            <Trash2 size={16} />
+                          </button>
+                        </div>
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+          </div>
+        )}
+
+        {/* Table View */}
+        {viewMode === 'table' && (
+          <div className="rounded-xl border border-slate-200 bg-white shadow-sm overflow-hidden">
+            <div className="overflow-x-auto">
+              <table className="w-full">
+                <thead className="border-b border-slate-200 bg-slate-50">
+                  <tr className="text-left text-xs font-semibold text-slate-600 uppercase tracking-wider">
+                    <th className="px-4 py-3">#</th>
+                    <th className="px-4 py-3">Name</th>
+                    <th className="px-4 py-3">Owner</th>
+                    <th className="px-4 py-3">Status</th>
+                    <th className="px-4 py-3">Updated</th>
+                    <th className="px-4 py-3 text-right">Actions</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-slate-200">
+                  {loadingPage ? (
+                    Array.from({ length: rowsPerPage }).map((_, i) => (
+                      <tr key={i} className="animate-pulse hover:bg-slate-50">
+                        <td className="px-4 py-3">
+                          <div className="h-4 w-8 rounded bg-slate-200" />
+                        </td>
+                        <td className="px-4 py-3">
+                          <div className="h-4 w-1/2 rounded bg-slate-200" />
+                        </td>
+                        <td className="px-4 py-3">
+                          <div className="h-4 w-1/3 rounded bg-slate-200" />
+                        </td>
+                        <td className="px-4 py-3">
+                          <div className="h-4 w-20 rounded bg-slate-200" />
+                        </td>
+                        <td className="px-4 py-3">
+                          <div className="h-4 w-24 rounded bg-slate-200" />
+                        </td>
+                        <td className="px-4 py-3 text-right">
+                          <div className="h-4 w-16 rounded bg-slate-200 ml-auto" />
+                        </td>
+                      </tr>
+                    ))
+                  ) : pageItems.length === 0 ? (
+                    <tr>
+                      <td colSpan={6} className="px-4 py-8 text-center text-sm text-slate-500">
+                        No projects found
                       </td>
                     </tr>
-                  );
-                })
-              )}
-            </tbody>
-          </table>
-        </div>
+                  ) : (
+                    pageItems.map((p, idx) => {
+                      const ownerName = typeof p.ownerName === 'string' ? p.ownerName : '';
+                      const displayIndex = (page - 1) * rowsPerPage + idx + 1;
 
-        <div className="mt-4 flex items-center justify-between">
-          <div className="text-xs text-gray-600">Page {page} of {totalPages}</div>
-          <div className="flex items-center gap-3">
-            <select value={rowsPerPage} onChange={(e) => { setRowsPerPage(Number(e.target.value)); setPage(1); }} className="rounded-md border border-slate-200 bg-white px-2 py-1 text-sm" aria-label="Rows per page">
-              <option value={10}>10</option>
-              <option value={20}>20</option>
-              <option value={50}>50</option>
+                      return (
+                        <tr key={p.id} className="hover:bg-slate-50 transition-colors">
+                          <td className="px-4 py-3 text-xs font-medium text-slate-600">{displayIndex}</td>
+                          <td className="px-4 py-3">
+                            <Link href={`/projects/${p.id}`} className="text-indigo-600 font-medium hover:text-indigo-700 transition-colors">
+                              {p.name}
+                            </Link>
+                          </td>
+                          <td className="px-4 py-3 text-sm text-slate-700">{ownerName || 'Unassigned'}</td>
+                          <td className="px-4 py-3">
+                            <span className={`inline-flex items-center rounded-full px-2.5 py-0.5 text-xs font-medium ${getStatusBadgeClass(p.status)}`}>
+                              {p.status}
+                            </span>
+                          </td>
+                          <td className="px-4 py-3 text-sm text-slate-600">{relativeTime(p.lastUpdateAt)}</td>
+                          <td className="px-4 py-3 text-right">
+                            <div className="flex items-center justify-end gap-1">
+                              <button
+                                onClick={() => setEditing(p)}
+                                className="rounded-lg p-1.5 text-slate-600 hover:bg-slate-100 hover:text-slate-900 transition-colors"
+                                title="Edit"
+                                aria-label={`Edit ${p.name}`}
+                              >
+                                <Edit2 size={16} />
+                              </button>
+                              <button
+                                onClick={() => setConfirmDeleteId(p.id)}
+                                className="rounded-lg p-1.5 text-slate-600 hover:bg-red-50 hover:text-red-600 transition-colors"
+                                title="Delete"
+                                aria-label={`Delete ${p.name}`}
+                              >
+                                <Trash2 size={16} />
+                              </button>
+                            </div>
+                          </td>
+                        </tr>
+                      );
+                    })
+                  )}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        )}
+
+        {/* Pagination */}
+        <div className="flex flex-col items-center justify-between gap-4 rounded-xl border border-slate-200 bg-white p-4 md:flex-row">
+          <div className="text-sm text-slate-600">
+            Showing {pageItems.length > 0 ? (page - 1) * rowsPerPage + 1 : 0}–{Math.min(page * rowsPerPage, total)} of {total} project
+            {total !== 1 ? 's' : ''}
+          </div>
+
+          <div className="flex items-center gap-4">
+            {/* Rows per page selector */}
+            <select
+              value={rowsPerPage}
+              onChange={(e) => {
+                setRowsPerPage(Number(e.target.value));
+                setPage(1);
+              }}
+              className="rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm font-medium text-slate-700 hover:bg-slate-50 focus:outline-none focus:ring-1 focus:ring-indigo-500 transition-colors"
+              aria-label="Rows per page"
+            >
+              <option value={10}>10 per page</option>
+              <option value={20}>20 per page</option>
+              <option value={50}>50 per page</option>
             </select>
-            <button disabled={page <= 1} onClick={() => setPage((p) => Math.max(1, p - 1))} className="rounded px-3 py-1 bg-white border disabled:opacity-50">Prev</button>
-            <button disabled={page >= totalPages} onClick={() => setPage((p) => Math.min(totalPages, p + 1))} className="rounded px-3 py-1 bg-white border disabled:opacity-50">Next</button>
+
+            {/* Pagination buttons */}
+            <div className="flex items-center gap-2">
+              <button
+                disabled={page <= 1 || loadingPage}
+                onClick={() => setPage((p) => Math.max(1, p - 1))}
+                className="rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm font-medium text-slate-700 hover:bg-slate-50 focus:outline-none focus:ring-1 focus:ring-indigo-500 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+                aria-label="Previous page"
+              >
+                Prev
+              </button>
+
+              <div className="flex items-center gap-1">
+                {Array.from({ length: totalPages }).map((_, i) => {
+                  const pageNum = i + 1;
+                  const isCurrentPage = pageNum === page;
+                  const showPage =
+                    isCurrentPage ||
+                    pageNum === 1 ||
+                    pageNum === totalPages ||
+                    (pageNum >= page - 1 && pageNum <= page + 1);
+
+                  if (!showPage && pageNum === 2) {
+                    return (
+                      <span key="ellipsis-left" className="text-slate-500">
+                        …
+                      </span>
+                    );
+                  }
+                  if (!showPage && pageNum === totalPages - 1) {
+                    return (
+                      <span key="ellipsis-right" className="text-slate-500">
+                        …
+                      </span>
+                    );
+                  }
+
+                  if (!showPage) return null;
+
+                  return (
+                    <button
+                      key={pageNum}
+                      onClick={() => setPage(pageNum)}
+                      className={`rounded-lg px-3 py-2 text-sm font-medium transition-colors ${
+                        isCurrentPage
+                          ? 'bg-indigo-600 text-white'
+                          : 'border border-slate-200 bg-white text-slate-700 hover:bg-slate-50'
+                      }`}
+                      aria-current={isCurrentPage ? 'page' : undefined}
+                      aria-label={`Page ${pageNum}`}
+                    >
+                      {pageNum}
+                    </button>
+                  );
+                })}
+              </div>
+
+              <button
+                disabled={page >= totalPages || loadingPage}
+                onClick={() => setPage((p) => Math.min(totalPages, p + 1))}
+                className="rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm font-medium text-slate-700 hover:bg-slate-50 focus:outline-none focus:ring-1 focus:ring-indigo-500 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+                aria-label="Next page"
+              >
+                Next
+              </button>
+            </div>
           </div>
         </div>
       </div>
 
+      {/* Edit Drawer */}
       {editing ? (
-        // Side Drawer
-        <div className={`fixed inset-0 z-60 flex`} aria-hidden={!editing}>
-          <div className={`absolute inset-0 bg-black/40`} onClick={() => setEditing(null)} />
+        <div className={`fixed inset-0 z-50 flex overflow-hidden`} aria-hidden={!editing}>
+          <div
+            className={`absolute inset-0 bg-black/40 transition-opacity duration-200 ${editing ? 'opacity-100' : 'opacity-0'}`}
+            onClick={() => setEditing(null)}
+          />
           <aside
-            className={`fixed right-0 top-0 h-full w-full sm:w-3/4 md:w-1/2 lg:w-1/3 bg-white shadow-2xl transform transition-transform duration-200 ${editing ? 'translate-x-0 opacity-100' : 'translate-x-full opacity-0'}`}
+            className={`fixed right-0 top-0 h-full w-full max-w-lg bg-white shadow-2xl transform transition-transform duration-200 ${
+              editing ? 'translate-x-0' : 'translate-x-full'
+            }`}
             role="dialog"
             aria-modal="true"
             aria-labelledby="edit-project-title"
@@ -395,33 +661,107 @@ export default function ManageProjectsClient({ initialProjects }: { initialProje
               if (e.key === 'Escape') setEditing(null);
               if (e.key === 'Tab') {
                 const el = e.currentTarget as HTMLElement;
-                const nodes = Array.from(el.querySelectorAll<HTMLElement>('a[href], button:not([disabled]), textarea, input, select, [tabindex]:not([tabindex="-1"])')).filter(x => !x.hasAttribute('disabled'));
+                const nodes = Array.from(
+                  el.querySelectorAll<HTMLElement>(
+                    'a[href], button:not([disabled]), textarea, input, select, [tabindex]:not([tabindex="-1"])'
+                  )
+                ).filter((x) => !x.hasAttribute('disabled'));
                 if (nodes.length === 0) return;
                 const first = nodes[0];
                 const last = nodes[nodes.length - 1];
-                if (e.shiftKey && document.activeElement === first) { e.preventDefault(); last.focus(); }
-                else if (!e.shiftKey && document.activeElement === last) { e.preventDefault(); first.focus(); }
+                if (e.shiftKey && document.activeElement === first) {
+                  e.preventDefault();
+                  last.focus();
+                } else if (!e.shiftKey && document.activeElement === last) {
+                  e.preventDefault();
+                  first.focus();
+                }
               }
             }}
           >
-            <div className="flex h-full flex-col">
-              <div className="flex items-center justify-between border-b px-6 py-4">
-                <h3 id="edit-project-title" className="text-lg font-semibold">Edit Project</h3>
-                <button aria-label="Close drawer" onClick={() => setEditing(null)} className="text-slate-600">✕</button>
+            <div className="flex h-full flex-col bg-white">
+              {/* Header */}
+              <div className="border-b border-slate-200 px-6 py-4 flex items-center justify-between">
+                <div>
+                  <h2 id="edit-project-title" className="text-lg font-semibold text-slate-900">
+                    Edit Project
+                  </h2>
+                  <p className="text-sm text-slate-600 mt-0.5">{editing.name}</p>
+                </div>
+                <button
+                  aria-label="Close drawer"
+                  onClick={() => setEditing(null)}
+                  className="rounded-lg p-1.5 text-slate-600 hover:bg-slate-100 hover:text-slate-900 transition-colors"
+                >
+                  <X size={20} />
+                </button>
               </div>
-              <div className="flex-1 overflow-auto p-6">
-                <EditProjectForm project={editing} onCancel={() => setEditing(null)} onSave={async (data: Project) => { await handleSave(data); }} loading={saving} />
+
+              {/* Content */}
+              <div className="flex-1 overflow-auto">
+                <div className="p-6">
+                  <EditProjectForm
+                    project={editing}
+                    onCancel={() => setEditing(null)}
+                    onSave={async (data: Project) => {
+                      await handleSave(data);
+                    }}
+                    loading={saving}
+                  />
+                </div>
               </div>
-              <div className="border-t px-6 py-3 text-sm text-gray-600">
-                Last updated by {editing?.ownerName || 'N/A'} at {editing?.lastUpdateAt || '-'}
+
+              {/* Footer */}
+              <div className="border-t border-slate-200 px-6 py-4 bg-slate-50 text-xs text-slate-600">
+                Last updated by {editing?.ownerName || 'Unknown'} at{' '}
+                {editing?.lastUpdateAt
+                  ? new Date(editing.lastUpdateAt).toLocaleString()
+                  : 'N/A'}
               </div>
             </div>
           </aside>
         </div>
       ) : null}
-      {toastMessage ? <Toast message={toastMessage} onClose={() => setToastMessage(undefined)} /> : null}
 
-      <ConfirmationModal open={!!confirmDeleteId} title="Xác nhận xóa" description="Bạn có chắc muốn xóa project này? Hành động không thể hoàn tác." confirmLabel="Xóa" cancelLabel="Hủy" onConfirm={() => { if (confirmDeleteId) void handleDelete(confirmDeleteId); }} onCancel={() => setConfirmDeleteId(null)} />
+      {/* Modals & Toasts */}
+      {toastMessage && <Toast message={toastMessage} onClose={() => setToastMessage(undefined)} />}
+
+      {/* Delete Confirmation Modal */}
+      {confirmDeleteId && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40">
+          <div className="w-full max-w-sm rounded-2xl bg-white shadow-xl p-6 space-y-4">
+            <div className="flex items-center gap-3">
+              <div className="flex-shrink-0 flex items-center justify-center h-10 w-10 rounded-full bg-red-100">
+                <AlertTriangle className="text-red-600" size={20} />
+              </div>
+              <h3 className="text-lg font-semibold text-slate-900">Delete Project?</h3>
+            </div>
+
+            <div className="text-sm text-slate-600">
+              This action cannot be undone. All data for{' '}
+              <span className="font-semibold">"{pageItems.find((p) => p.id === confirmDeleteId)?.name || 'this project'}"</span> will be
+              permanently deleted.
+            </div>
+
+            <div className="flex gap-3 pt-2">
+              <button
+                onClick={() => setConfirmDeleteId(null)}
+                className="flex-1 rounded-lg border border-slate-200 bg-white px-4 py-2.5 text-sm font-medium text-slate-700 hover:bg-slate-50 focus:outline-none focus:ring-1 focus:ring-slate-500 transition-colors"
+              >
+                Cancel
+              </button>
+              <button
+                onClick={() => {
+                  if (confirmDeleteId) void handleDelete(confirmDeleteId);
+                }}
+                className="flex-1 rounded-lg bg-red-600 px-4 py-2.5 text-sm font-medium text-white hover:bg-red-700 focus:outline-none focus:ring-1 focus:ring-red-500 transition-colors"
+              >
+                Delete
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
       <CreateProjectModal
         open={showCreate}
@@ -431,21 +771,23 @@ export default function ManageProjectsClient({ initialProjects }: { initialProje
           setTotal((t) => t + 1);
         }}
         onCreated={(p, tempId) => {
-          // If we have a tempId, replace the temp entry with the server project
           if (tempId) {
             setProjects((prev) => prev.map((it) => (it.id === tempId ? p : it)));
           } else if (p && p.id) {
-            // no temp: just add
             setProjects((prev) => [p, ...prev]);
             setTotal((t) => t + 1);
           } else {
-            void (async () => { const paged = await getProjects({ page: 1, pageSize: rowsPerPage }); setProjects(paged.items); setTotal(paged.total); setPage(1); })();
+            void (async () => {
+              const paged = await getProjects({ page: 1, pageSize: rowsPerPage });
+              setProjects(paged.items);
+              setTotal(paged.total);
+              setPage(1);
+            })();
           }
           setShowCreate(false);
-          setToastMessage('Project created');
+          setToastMessage('Project created successfully');
         }}
         onCreateFailed={(tempId) => {
-          // remove temp entry
           setProjects((prev) => prev.filter((it) => it.id !== tempId));
           setTotal((t) => Math.max(0, t - 1));
           setToastMessage('Create failed');
@@ -453,7 +795,9 @@ export default function ManageProjectsClient({ initialProjects }: { initialProje
         onAnnounce={(m) => setGlobalAnnounce(m)}
       />
 
-      <div aria-live="assertive" className="sr-only">{globalAnnounce}</div>
+      <div aria-live="assertive" className="sr-only">
+        {globalAnnounce}
+      </div>
     </div>
   );
 }

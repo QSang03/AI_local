@@ -29,7 +29,7 @@ export default function RootLayout({
       lang="en"
       className={`${spaceGrotesk.variable} ${ibmPlexMono.variable} h-full antialiased`}
     >
-      <body className="min-h-full flex flex-col">
+      <body suppressHydrationWarning className="min-h-full flex flex-col">
         <Script
           src="https://cdn.jsdelivr.net/npm/qrcode@1.5.1/build/qrcode.min.js"
           strategy="beforeInteractive"

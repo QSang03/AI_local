@@ -2,11 +2,11 @@ import React from 'react';
 import ProjectDetailClient from '@/components/features/projects/ProjectDetailClient';
 
 interface Props {
-  params: { id: string };
+  params: Promise<{ id: string }> | { id: string };
 }
 
 export default async function ProjectDetailPage({ params }: Props) {
-  const { id } = params;
+  const { id } = await params;
   if (!id) {
     return (
       <div className="p-6">

@@ -4,6 +4,7 @@ import {
   AssignThreadPayload,
   BlacklistEntry,
   ChannelConfig,
+  ChatMessage,
   CreateUserPayload,
   MessageThread,
   OmniInboxData,
@@ -246,7 +247,7 @@ export async function getProjects(params?: { page?: number; pageSize?: number; q
         status: (String(typed.status) as Project['status']) ?? 'new',
         lastUpdateAt: String(typed.updated_at ?? typed.created_at ?? new Date().toISOString()),
         unreadCount: Number(typed.unreadCount ?? 0),
-        summary: String(typed.summary ?? ''),
+        summary: String(typed.quick_summary ?? typed.summary ?? ''),
         todoList: Array.isArray(typed.todoList) ? (typed.todoList as string[]) : [],
       };
     });
@@ -370,6 +371,98 @@ export async function getProjectById(id: string | number): Promise<Project> {
     return await requestJson<Project>(`/projects/${id}`);
   }
   throw new Error('No API_BASE_URL configured for getProjectById');
+}
+
+export interface ProjectSummaryResponse {
+  id: number;
+  project_id: number;
+  type: string;
+  status: string;
+  content: string;
+  summary_date?: string;
+  created_at?: string;
+}
+
+export async function getProjectSummary(
+  projectId: string | number,
+  date?: string,
+): Promise<ProjectSummaryResponse | null> {
+  if (!API_BASE_URL) {
+    throw new Error('No API_BASE_URL configured for getProjectSummary');
+  }
+
+  const params = new URLSearchParams();
+  if (date && date.trim().length > 0) {
+    params.set('date', date.trim());
+  }
+  const query = params.toString();
+  const path = `/projects/${projectId}/summary${query ? `?${query}` : ''}`;
+
+  try {
+    return await requestJson<ProjectSummaryResponse>(path);
+  } catch {
+    return null;
+  }
+}
+
+export async function getProjectSummariesList(
+  projectId: string | number,
+  limit: number = 50,
+  offset: number = 0
+): Promise<ProjectSummaryResponse[]> {
+  if (!API_BASE_URL) return [];
+  try {
+    const qs = new URLSearchParams();
+    qs.set("limit", String(limit));
+    qs.set("offset", String(offset));
+    return await requestJson<ProjectSummaryResponse[]>(`/projects/${projectId}/summaries?${qs.toString()}`);
+  } catch {
+    return [];
+  }
+}
+
+export async function getProjectMessagesList(
+  projectId: string | number,
+  limit: number = 50,
+  offset: number = 0
+): Promise<any[]> {
+  if (!API_BASE_URL) return [];
+  try {
+    const qs = new URLSearchParams();
+    qs.set("limit", String(limit));
+    qs.set("offset", String(offset));
+    return await requestJson<any[]>(`/projects/${projectId}/messages?${qs.toString()}`);
+  } catch {
+    return [];
+  }
+}
+
+export interface ProjectTodoItem {
+  task: string;
+  status: string;
+  priority: string;
+}
+
+export interface ProjectTodoListResponse {
+  id: number;
+  project_id: number;
+  items: ProjectTodoItem[];
+  created_at?: string;
+  updated_at?: string;
+}
+
+export async function getProjectTodoList(
+  projectId: string | number,
+): Promise<ProjectTodoListResponse | null> {
+  if (!API_BASE_URL) {
+    return null;
+  }
+
+  try {
+    return await requestJson<ProjectTodoListResponse>(`/projects/${projectId}/todo-list`);
+  } catch {
+    return null;
+  }
 }
 
 export async function getThreads(): Promise<MessageThread[]> {
@@ -654,9 +747,13 @@ export async function assignThreadToProjects(
 export async function getProjectChats(): Promise<ProjectChatThread[]> {
   if (!USE_MOCK && API_BASE_URL) {
     try {
-      return await requestJson<ProjectChatThread[]>("/chat/threads");
+      const sessions = await getChatSessions();
+      return sessions.map((session) => ({
+        projectId: String(session.project_id),
+        projectName: session.name,
+        messages: [],
+      }));
     } catch {
-      // If backend not available for REST chat threads, return empty list.
       return [];
     }
   }
@@ -690,8 +787,24 @@ export async function sendProjectChatMessage(payload: {
 
 export async function getProjectAIOutput(projectId: string): Promise<{ summary: string; todoList: string[] }> {
   if (!USE_MOCK && API_BASE_URL) {
+    // Try the newer `/summary` endpoint first (matches API spec),
+    // fall back to legacy `/ai` path for compatibility.
     try {
-      return await requestJson<{ summary: string; todoList: string[] }>(`/projects/${projectId}/ai`);
+      try {
+        const data = await requestJson<unknown>(`/projects/${projectId}/summary`);
+        const obj = data as Record<string, unknown>;
+        const summary = String(obj.summary ?? obj.content ?? "");
+        const todoList = Array.isArray(obj.todoList) ? (obj.todoList as string[]) : (Array.isArray(obj.todo_list) ? (obj.todo_list as string[]) : []);
+        return { summary, todoList };
+      } catch (err) {
+        // If `/summary` not found, try legacy `/ai` endpoint
+        try {
+          const data2 = await requestJson<{ summary?: string; todoList?: string[] }>(`/projects/${projectId}/ai`);
+          return { summary: data2.summary ?? "", todoList: data2.todoList ?? [] };
+        } catch {
+          return { summary: "", todoList: [] };
+        }
+      }
     } catch {
       return { summary: "", todoList: [] };
     }
@@ -707,11 +820,25 @@ export async function getProjectAIOutput(projectId: string): Promise<{ summary: 
   return { summary: "", todoList: [] };
 }
 
-export async function getOmniInboxData(provider?: string): Promise<OmniInboxData> {
+export interface OmniInboxQuery {
+  provider?: string;
+  conversation_id?: string;
+  include_ignored?: boolean;
+  limit?: number;
+  offset?: number;
+}
+
+export async function getOmniInboxData(query?: OmniInboxQuery): Promise<OmniInboxData> {
   if (!USE_MOCK && API_BASE_URL) {
     try {
-      const qs = provider ? `?provider=${encodeURIComponent(provider)}` : "";
-      const raw = await requestJson<unknown>(`/messages${qs}`);
+      const qs = new URLSearchParams();
+      if (query?.provider) qs.set("provider", String(query.provider));
+      if (query?.conversation_id) qs.set("conversation_id", String(query.conversation_id));
+      if (query?.include_ignored !== undefined) qs.set("include_ignored", String(query.include_ignored));
+      if (typeof query?.limit === "number") qs.set("limit", String(query.limit));
+      if (typeof query?.offset === "number") qs.set("offset", String(query.offset));
+      const qsStr = qs.toString();
+      const raw = await requestJson<unknown>(`/messages${qsStr ? `?${qsStr}` : ""}`);
 
       const normalizeMessage = (input: unknown): OmniInboxData["messages"][number] => {
         const item = input as Record<string, unknown>;
@@ -737,6 +864,14 @@ export async function getOmniInboxData(provider?: string): Promise<OmniInboxData
         const senderDisplay = item.senderDisplay ?? item.sender_display ?? senderRaw ?? "Unknown";
         const externalId = String(item.external_id ?? item.externalId ?? (item.externalId === 0 ? '0' : undefined) ?? "");
 
+        const payloadObj = (item.payload && typeof item.payload === 'object') ? (item.payload as Record<string, unknown>) : {};
+        const emailBodyHtml = String(
+          item.body_html ?? item.bodyHtml ?? payloadObj.body_html ?? payloadObj.bodyHtml ?? ""
+        ).trim();
+        const normalizedContent = emailBodyHtml && channelMapped === "email"
+          ? ""  // keep content empty to avoid fallback text duplication when HTML is used
+          : String(item.content ?? item.snippet ?? "");
+
         return {
           id: String(item.id ?? ""),
           conversationId: String(convId),
@@ -745,12 +880,17 @@ export async function getOmniInboxData(provider?: string): Promise<OmniInboxData
           senderDisplay: String(senderDisplay ?? "Unknown"),
           subject: String(item.subject ?? ""),
           snippet: String(item.snippet ?? item.subject ?? ""),
-          content: String(item.content ?? item.snippet ?? ""),
+          content: normalizedContent,
+          bodyHtml: emailBodyHtml || undefined,
           receivedAt: String(item.receivedAt ?? item.received_at ?? ""),
           projectIds,
           externalId: externalId || undefined,
           rawChannel: rawChannelObj ?? null,
           rawConversation: rawConversationObj ?? null,
+          project: item.project ? {
+            id: (item.project as any).id,
+            name: (item.project as any).name
+          } : undefined,
         };
       };
 
@@ -787,9 +927,12 @@ export async function getOmniInboxData(provider?: string): Promise<OmniInboxData
         ? (rawObject.blacklist as unknown[])
         : [];
 
+      const total = Number(rawObject.total ?? rawObject.count ?? rawObject.total_count ?? (Array.isArray(raw) ? raw.length : undefined));
+
       return {
         messages: messageListRaw.map(normalizeMessage),
         blacklist: blacklistRaw.map(normalizeBlacklist),
+        total: Number.isNaN(total) ? undefined : total,
       };
     } catch {
       // Fallback to mock to keep FE unblocked when backend is not ready.
@@ -808,14 +951,28 @@ export async function saveMessageProjectMapping(
 ): Promise<MutationResult> {
   if (!USE_MOCK && API_BASE_URL) {
     try {
-      return await requestJson<MutationResult>("/inbox/mapping", {
-        method: "POST",
-        body: JSON.stringify(payload),
+      const projectIdsNumber = payload.projectIds.map(id => {
+        const num = parseInt(id, 10);
+        return isNaN(num) ? id : num;
       });
+
+      const promises = payload.messageIds.map(msgId =>
+        requestJson<MutationResult>(`/messages/${msgId}/mark`, {
+          method: "POST",
+          body: JSON.stringify({ project_ids: projectIdsNumber }),
+        })
+      );
+
+      await Promise.all(promises);
+
+      return {
+        ok: true,
+        message: "operation successful",
+      };
     } catch {
       return {
         ok: false,
-        message: "Khong the luu mapping luc nay. Vui long thu lai.",
+        message: "Không thể lưu mapping lúc này. Vui lòng thử lại.",
       };
     }
   }
@@ -880,6 +1037,22 @@ export async function removeBlacklistEntry(entryId: string): Promise<MutationRes
   };
 }
 
+export async function ignoreConversation(id: string, is_ignored: boolean): Promise<MutationResult> {
+  if (!USE_MOCK && API_BASE_URL) {
+    try {
+      await requestJson<MutationResult>(`/conversations/${id}`, {
+        method: "PATCH",
+        body: JSON.stringify({ is_ignored }),
+      });
+      return { ok: true, message: `Thành công` };
+    } catch {
+      return { ok: false, message: "Không thể thay đổi trạng thái lúc này." };
+    }
+  }
+  await delay(150);
+  return { ok: true, message: `Thành công` };
+}
+
 export async function requestFileUploadUrl(
   payload: FileUploadRequest,
 ): Promise<FileUploadResponse> {
@@ -935,4 +1108,98 @@ export async function getFileViewUrl(fileId: string): Promise<string> {
 
   // Mock response
   return `http://minio:9000/pta-files/active/${fileId}?X-Amz-Algorithm=...`;
+}
+
+export interface ChatSession {
+  created_at: string;
+  id: string;
+  name: string;
+  openclaw_session_id: string;
+  parent_session_id: string;
+  project?: {
+    id: number;
+    name: string;
+    description?: string;
+    quick_summary?: string;
+    status?: string;
+    created_at?: string;
+    updated_at?: string;
+  };
+  project_id: number;
+  type: string;
+  updated_at: string;
+  user_id: number;
+}
+
+export interface ChatSessionMessage {
+  id: string;
+  session_id?: string;
+  content: string;
+  role: string;
+  createdAt: string;
+}
+
+export async function getChatSessionMessages(
+  sessionId: string,
+  params?: { limit?: number; offset?: number },
+): Promise<ChatSessionMessage[]> {
+  if (!USE_MOCK && API_BASE_URL) {
+    try {
+      const query = new URLSearchParams();
+      if (params?.limit !== undefined) query.set("limit", String(params.limit));
+      if (params?.offset !== undefined) query.set("offset", String(params.offset));
+      const qs = query.toString();
+      const raw = await requestJson<unknown[]>(`/chat/sessions/${encodeURIComponent(sessionId)}/messages${qs ? `?${qs}` : ""}`);
+      return (raw || []).map((item) => {
+        const obj = item as Record<string, unknown>;
+        return {
+          id: String(obj.id ?? ""),
+          session_id: obj.session_id ? String(obj.session_id) : undefined,
+          content: String(obj.content ?? ""),
+          role: String(obj.role ?? "assistant"),
+          createdAt: String(obj.created_at ?? obj.createdAt ?? ""),
+        };
+      });
+    } catch {
+      return [];
+    }
+  }
+
+  return [];
+}
+
+export async function getChatSessions(params?: {
+  projectId?: number;
+  limit?: number;
+  offset?: number;
+}): Promise<ChatSession[]> {
+  if (!USE_MOCK && API_BASE_URL) {
+    const query = new URLSearchParams();
+    if (typeof params?.projectId === "number") query.set("project_id", String(params.projectId));
+    if (typeof params?.limit === "number") query.set("limit", String(params.limit));
+    if (typeof params?.offset === "number") query.set("offset", String(params.offset));
+    const qs = query.toString();
+    return await requestJson<ChatSession[]>(`/chat/sessions${qs ? `?${qs}` : ""}`, {
+      method: "GET"
+    });
+  }
+  return [];
+}
+
+export async function getChatStatus(): Promise<{ status: "ready" | "starting" | "stopped" | "not_exists" }> {
+  if (!USE_MOCK && API_BASE_URL) {
+    return await requestJson<{ status: "ready" | "starting" | "stopped" | "not_exists" }>("/chat/status", {
+      method: "GET"
+    });
+  }
+  return { status: "not_exists" };
+}
+
+export async function wakeupChatSession(): Promise<{ status: string }> {
+  if (!USE_MOCK && API_BASE_URL) {
+    return await requestJson<{ status: string }>("/chat/wakeup", {
+      method: "POST"
+    });
+  }
+  return { status: "ready" };
 }
