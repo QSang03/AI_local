@@ -30,6 +30,20 @@ const CHANNEL_COLORS = {
   whatsapp: { bg: "bg-green-100", text: "text-green-700", label: "WA", icon: Phone },
 } as const;
 
+const INBOX_VIEW_STATE_KEY = "omniInboxViewState";
+
+type InboxViewState = {
+  channelFilter: ChannelFilter;
+  selectedByChannel: Partial<Record<Exclude<ChannelFilter, "all">, string>>;
+};
+
+function mapProviderToChannel(provider?: string): MessageChannel {
+  const p = String(provider ?? "").toLowerCase();
+  if (p.includes("zalo")) return "zalo";
+  if (p.includes("whatsapp")) return "whatsapp";
+  return "email";
+}
+
 function timeAgo(dateStr: string) {
   try {
     const d = new Date(dateStr);
@@ -46,9 +60,25 @@ export function OmniInboxBoard({
   initialMessagesByConversation,
   initialSelectedConversationId,
 }: OmniInboxBoardProps) {
+  const persistedState: InboxViewState | null = useMemo(() => {
+    if (typeof window === "undefined") return null;
+    try {
+      const raw = localStorage.getItem(INBOX_VIEW_STATE_KEY);
+      if (!raw) return null;
+      const parsed = JSON.parse(raw) as Partial<InboxViewState>;
+      const cf = parsed.channelFilter;
+      const channelFilter: ChannelFilter =
+        cf === "email" || cf === "zalo" || cf === "whatsapp" || cf === "all" ? cf : "email";
+      const selectedByChannel = (parsed.selectedByChannel ?? {}) as InboxViewState["selectedByChannel"];
+      return { channelFilter, selectedByChannel };
+    } catch {
+      return null;
+    }
+  }, []);
+
   const [remoteLoading, setRemoteLoading] = useState(false);
   const [messagesLoading, setMessagesLoading] = useState(false);
-  const [channelFilter, setChannelFilter] = useState<ChannelFilter>("email");
+  const [channelFilter, setChannelFilter] = useState<ChannelFilter>(persistedState?.channelFilter ?? "email");
   const [searchQuery, setSearchQuery] = useState("");
   const [hideBlacklisted, setHideBlacklisted] = useState(true);
   const [ignoredConversations, setIgnoredConversations] = useState<Set<string>>(new Set());
@@ -58,6 +88,9 @@ export function OmniInboxBoard({
   const [toastMessage, setToastMessage] = useState<string | null>(null);
   const [localProjects, setLocalProjects] = useState<Project[]>(projects ?? []);
   const [expandedMsgIds, setExpandedMsgIds] = useState<string[]>([]);
+  const [persistedSelectionByChannel, setPersistedSelectionByChannel] = useState<InboxViewState["selectedByChannel"]>(
+    persistedState?.selectedByChannel ?? {},
+  );
   const projectNameById = useMemo(
     () =>
       new Map(
@@ -96,19 +129,34 @@ export function OmniInboxBoard({
   const initializedProviderRef = useRef<string | undefined>(undefined);
   const usedInitialSeedRef = useRef(false);
 
-  useEffect(() => {
-    if (typeof window === "undefined") return;
-    const saved = localStorage.getItem("omniInboxChannelFilter");
-    if (saved === "email" || saved === "zalo" || saved === "whatsapp" || saved === "all") {
-      setChannelFilter(saved as ChannelFilter);
-    }
-  }, []);
-
-  useEffect(() => {
-    if (typeof window !== "undefined") {
-      localStorage.setItem("omniInboxChannelFilter", channelFilter);
-    }
-  }, [channelFilter]);
+  const persistInboxViewState = useCallback(
+    (
+      nextChannelFilter: ChannelFilter,
+      selectedByChannelPatch?: Partial<InboxViewState["selectedByChannel"]>,
+    ) => {
+      if (typeof window === "undefined") return;
+      const nextSelectedByChannel =
+        selectedByChannelPatch && Object.keys(selectedByChannelPatch).length > 0
+          ? {
+              ...persistedSelectionByChannel,
+              ...selectedByChannelPatch,
+            }
+          : persistedSelectionByChannel;
+      if (nextSelectedByChannel !== persistedSelectionByChannel) {
+        setPersistedSelectionByChannel(nextSelectedByChannel);
+      }
+      try {
+        const nextState: InboxViewState = {
+          channelFilter: nextChannelFilter,
+          selectedByChannel: nextSelectedByChannel,
+        };
+        localStorage.setItem(INBOX_VIEW_STATE_KEY, JSON.stringify(nextState));
+      } catch {
+        // ignore storage errors
+      }
+    },
+    [persistedSelectionByChannel],
+  );
 
   const providerParam = useMemo(() => {
     if (channelFilter === "all") return undefined;
@@ -221,6 +269,7 @@ export function OmniInboxBoard({
     messageFetchesRef.current.clear();
     setConversationOffset(0);
     setConversationHasMore(true);
+    setConversations([]);
     setSelectedConversationId(null);
     setMessagesByConversation({});
     setMessageMetaByConversation({});
@@ -231,8 +280,18 @@ export function OmniInboxBoard({
     if (conversations.length === 0) return;
     const firstId = conversations[0]?.id;
     if (!firstId) return;
-    setSelectedConversationId((prev) => prev ?? firstId);
-  }, [conversations]);
+
+    const savedId =
+      channelFilter === "all"
+        ? null
+        : (persistedSelectionByChannel[channelFilter] ?? null);
+
+    setSelectedConversationId((prev) => {
+      if (prev && conversations.some((c) => c.id === prev)) return prev;
+      if (savedId && conversations.some((c) => c.id === savedId)) return savedId;
+      return firstId;
+    });
+  }, [conversations, channelFilter, persistedSelectionByChannel]);
 
   useEffect(() => {
     if (!selectedConversationId) return;
@@ -333,6 +392,9 @@ export function OmniInboxBoard({
 
   const handleSelectConversation = (id: string) => {
     if (id === selectedConversationId) return;
+    if (channelFilter !== "all") {
+      persistInboxViewState(channelFilter, { [channelFilter]: id });
+    }
     shouldAutoScrollToLatestRef.current = true;
     setSelectedConversationId(id);
     clearAll();
@@ -373,7 +435,10 @@ export function OmniInboxBoard({
             return (
               <button
                 key={ch}
-                onClick={() => setChannelFilter(ch)}
+                onClick={() => {
+                  persistInboxViewState(ch);
+                  setChannelFilter(ch);
+                }}
                 className={`flex items-center gap-1.5 px-3 py-1.5 rounded-md text-sm font-medium transition-all ${
                   active ? "bg-indigo-500 text-white shadow-sm" : "text-slate-600 hover:bg-slate-200"
                 }`}

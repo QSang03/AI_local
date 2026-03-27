@@ -721,7 +721,7 @@ export function ChannelConfigForm({ configs }: ChannelConfigFormProps) {
             ) : (
               <button
                 type="button"
-                onClick={handleStartZaloLogin}
+                onClick={() => void handleStartZaloLogin()}
                 disabled={startingZaloLogin || !hasZaloChannel}
                 className="mt-3 inline-flex rounded-xl bg-blue-600 px-4 py-2 text-sm font-semibold text-white transition hover:bg-blue-700 disabled:opacity-60"
               >
@@ -800,7 +800,7 @@ export function ChannelConfigForm({ configs }: ChannelConfigFormProps) {
             ) : (
               <button
                 type="button"
-                onClick={handleStartWhatsAppLogin}
+                onClick={() => void handleStartWhatsAppLogin()}
                 disabled={startingWhatsappLogin || !hasWhatsappChannel}
                 className="mt-3 inline-flex rounded-xl bg-blue-600 px-4 py-2 text-sm font-semibold text-white transition hover:bg-blue-700 disabled:opacity-60"
               >
