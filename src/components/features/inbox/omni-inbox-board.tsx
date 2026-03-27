@@ -129,6 +129,18 @@ export function OmniInboxBoard({
   const initializedProviderRef = useRef<string | undefined>(undefined);
   const usedInitialSeedRef = useRef(false);
 
+  useEffect(() => {
+    if (conversations.length > 0) {
+      setIgnoredConversations(prev => {
+        const next = new Set(prev);
+        conversations.forEach(c => {
+          if (c.isIgnored) next.add(c.id);
+        });
+        return next;
+      });
+    }
+  }, [conversations]);
+
   const persistInboxViewState = useCallback(
     (
       nextChannelFilter: ChannelFilter,
@@ -542,9 +554,22 @@ export function OmniInboxBoard({
                           return next;
                         });
                         const res = await ignoreConversation(selectedConversation.id, nextState);
-                        if (!res.ok) setToastMessage(res.message);
+                        if (!res.ok) {
+                          setToastMessage(res.message);
+                          // Revert if failed
+                          setIgnoredConversations((prev) => {
+                            const next = new Set(prev);
+                            if (current) next.add(selectedConversation.id);
+                            else next.delete(selectedConversation.id);
+                            return next;
+                          });
+                        }
                       }}
-                      className="p-2 rounded-lg border border-slate-200 text-slate-400 hover:text-rose-600 hover:bg-rose-50"
+                      className={`p-2 rounded-lg border transition-colors ${
+                        ignoredConversations.has(selectedConversation.id)
+                          ? "border-rose-200 text-rose-600 bg-rose-50"
+                          : "border-slate-200 text-slate-400 hover:text-rose-600 hover:bg-rose-50"
+                      }`}
                     >
                       <Ban size={16} />
                     </button>
@@ -560,50 +585,134 @@ export function OmniInboxBoard({
                 className="flex-1 overflow-y-auto px-6 py-6 space-y-6 pb-28 relative bg-[#F8FAFC] min-w-0"
               >
                 {messagesLoading ? <p className="text-xs text-slate-500 text-center">Đang tải tin nhắn cũ...</p> : null}
-                {selectedConversationMessages.map((msg) => {
-                  const checked = selectedIds.has(msg.id);
-                  const isExpanded = expandedMsgIds.includes(msg.id);
-                  return (
-                    <div key={msg.id} className={`relative flex gap-3 p-2 -mx-2 rounded-xl min-w-0 ${checked ? "bg-indigo-50/60 ring-1 ring-indigo-200" : "hover:bg-slate-100/50"}`}>
-                      <div className="pt-2 shrink-0 w-6 flex justify-center">
-                        <input type="checkbox" checked={checked} onChange={() => toggleSelection(msg.id)} className="w-[18px] h-[18px] rounded border-slate-300 text-indigo-600" />
+                {(() => {
+                  const groups: { date: string, messages: typeof selectedConversationMessages }[] = [];
+                  selectedConversationMessages.forEach(msg => {
+                    const date = new Date(msg.receivedAt).toLocaleDateString('vi-VN');
+                    const last = groups[groups.length - 1];
+                    if (last && last.date === date) {
+                      last.messages.push(msg);
+                    } else {
+                      groups.push({ date, messages: [msg] });
+                    }
+                  });
+
+                  return groups.map((group, gIdx) => (
+                    <div key={`group-${gIdx}`} className="space-y-6">
+                      <div className="flex justify-center py-2">
+                        <span className="px-3 py-1 bg-slate-200/60 rounded-full text-[11px] font-medium text-slate-500">
+                          {(() => {
+                            const today = new Date().toLocaleDateString('vi-VN');
+                            const yesterday = new Date(Date.now() - 86400000).toLocaleDateString('vi-VN');
+                            if (group.date === today) return "Hôm nay";
+                            if (group.date === yesterday) return "Hôm qua";
+                            return group.date;
+                          })()}
+                        </span>
                       </div>
-                      <div className="flex-1 min-w-0 space-y-1">
-                        <div className="flex items-baseline gap-2 min-w-0">
-                          <span className="text-[13px] font-semibold text-slate-900 break-words [overflow-wrap:anywhere]">{msg.senderDisplay}</span>
-                          <span className="text-[11px] text-slate-400">{timeAgo(msg.receivedAt)}</span>
-                        </div>
-                        <div className="inline-block bg-white border border-slate-200 rounded-2xl rounded-tl-sm px-4 py-3 max-w-[95%] min-w-0 overflow-hidden break-words [overflow-wrap:anywhere]">
-                          <MessageRenderer
-                            content={msg.content}
-                            bodyHtml={msg.bodyHtml}
-                            isExpanded={isExpanded}
-                            onToggleExpand={() =>
-                              setExpandedMsgIds((p) => (p.includes(msg.id) ? p.filter((x) => x !== msg.id) : [...p, msg.id]))
-                            }
-                          />
-                        </div>
-                        {((msg.projectIds?.length ?? 0) > 0 || msg.project?.name) ? (
-                          <div className="mt-1.5 flex flex-wrap gap-1.5">
-                            {(msg.projectIds ?? []).map((pid) => (
-                              <span
-                                key={`${msg.id}-${pid}`}
-                                className="inline-flex items-center rounded-full border border-indigo-200 bg-indigo-50 px-2 py-0.5 text-[11px] font-medium text-indigo-700"
+                      {group.messages.map((msg) => {
+                        const checked = selectedIds.has(msg.id);
+                        const isExpanded = expandedMsgIds.includes(msg.id);
+                        const isEmail = msg.channel === "email";
+                        const isOutbound = msg.isOutbound === true;
+                        
+                        const timeStr = (() => {
+                          const d = new Date(msg.receivedAt);
+                          return !isNaN(d.getTime()) 
+                            ? d.toLocaleTimeString('vi-VN', { hour: '2-digit', minute: '2-digit' }) 
+                            : "";
+                        })();
+
+                        return (
+                          <div
+                            key={msg.id}
+                            className={`relative flex gap-1.5 p-1 -mx-2 rounded-xl group/row ${
+                              checked ? "bg-indigo-50/60 ring-1 ring-indigo-200" : ""
+                            } ${isOutbound ? "flex-row-reverse" : "flex-row"}`}
+                          >
+                            {/* Selection Checkbox (always on the side relative to layout) */}
+                            <div className={`pt-2 shrink-0 w-6 flex justify-center opacity-0 group-hover/row:opacity-100 transition-opacity ${checked ? 'opacity-100' : ''}`}>
+                              <input
+                                type="checkbox"
+                                checked={checked}
+                                onChange={() => toggleSelection(msg.id)}
+                                className="w-[16px] h-[16px] rounded border-slate-300 text-indigo-600 cursor-pointer"
+                              />
+                            </div>
+
+                            {!isOutbound && (
+                              <div className="shrink-0 pt-1">
+                                <div className="w-9 h-9 rounded-full bg-slate-200 border border-slate-300 flex items-center justify-center overflow-hidden shadow-sm">
+                                  {msg.senderAvatarUrl ? (
+                                    <img src={msg.senderAvatarUrl} alt={msg.senderDisplay} className="w-full h-full object-cover" />
+                                  ) : (
+                                    <span className="text-[12px] font-bold text-slate-500">
+                                      {msg.senderDisplay?.slice(0, 1).toUpperCase() || "?"}
+                                    </span>
+                                  )}
+                                </div>
+                              </div>
+                            )}
+
+                            <div className={`flex-1 min-w-0 flex flex-col ${isOutbound ? "items-end" : "items-start"}`}>
+                              {!isOutbound && (
+                                <span className="text-[12px] font-medium text-slate-500 mb-1 ml-1">
+                                  {msg.senderDisplay}
+                                </span>
+                              )}
+                              
+                              <div
+                                className={`relative inline-block border max-w-[85%] min-w-0 rounded-2xl px-3.5 py-2 shadow-sm ${
+                                  isOutbound 
+                                    ? "bg-[#E5EFFF] border-blue-100 rounded-tr-sm" 
+                                    : "bg-white border-slate-200 rounded-tl-sm"
+                                }`}
                               >
-                                {projectNameById.get(String(pid)) ?? `Project #${pid}`}
-                              </span>
-                            ))}
-                            {msg.project?.name && !(msg.projectIds ?? []).some((pid) => String(pid) === String(msg.project?.id)) ? (
-                              <span className="inline-flex items-center rounded-full border border-indigo-200 bg-indigo-50 px-2 py-0.5 text-[11px] font-medium text-indigo-700">
-                                {msg.project.name}
-                              </span>
-                            ) : null}
+                                <div className="pb-3 min-w-0">
+                                  <MessageRenderer
+                                    content={msg.content}
+                                    bodyHtml={isEmail ? msg.bodyHtml : undefined}
+                                    mediaUrls={msg.mediaUrls}
+                                    isExpanded={isExpanded}
+                                    onToggleExpand={() =>
+                                      setExpandedMsgIds((p) =>
+                                        p.includes(msg.id) ? p.filter((x) => x !== msg.id) : [...p, msg.id]
+                                      )
+                                    }
+                                  />
+                                </div>
+                                <div className={`absolute bottom-1.5 right-2.5 flex items-center gap-1 ${isOutbound ? 'text-blue-500/70' : 'text-slate-400'}`}>
+                                  <span className="text-[10px] font-medium tabular-nums">{timeStr}</span>
+                                </div>
+                              </div>
+
+                              {((msg.projectIds?.length ?? 0) > 0 || msg.project?.name) && (
+                                <div className={`mt-1.5 flex flex-wrap gap-1.5 ${isOutbound ? "justify-end" : "justify-start"}`}>
+                                  {(msg.projectIds ?? []).map((pid) => (
+                                    <span
+                                      key={`${msg.id}-${pid}`}
+                                      className="inline-flex items-center rounded-full border border-indigo-200 bg-indigo-50 px-2 py-0.5 text-[10px] font-medium text-indigo-700"
+                                    >
+                                      {projectNameById.get(String(pid)) ?? `Project #${pid}`}
+                                    </span>
+                                  ))}
+                                  {msg.project && (
+                                    <span
+                                      key={`${msg.id}-single`}
+                                      className="inline-flex items-center rounded-full border border-teal-200 bg-teal-50 px-2 py-0.5 text-[10px] font-medium text-teal-700"
+                                    >
+                                      {msg.project.name}
+                                    </span>
+                                  )}
+                                </div>
+                              )}
+                            </div>
                           </div>
-                        ) : null}
-                      </div>
+                        );
+                      })}
                     </div>
-                  );
-                })}
+                  ));
+                })()}
               </div>
 
               <AnimatePresence>

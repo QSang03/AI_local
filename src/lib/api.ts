@@ -887,6 +887,12 @@ function normalizeInboxMessage(input: unknown): OmniInboxData["messages"][number
   ).trim();
   const normalizedContent =
     emailBodyHtml && channelMapped === "email" ? "" : String(item.content ?? item.snippet ?? "");
+  const mediaUrls: string[] | undefined = Array.isArray(payloadObj.media_urls)
+    ? payloadObj.media_urls.map((u: unknown) => String(u))
+    : undefined;
+
+  const isIgnored = typeof rawConversationObj?.is_ignored === "boolean" ? rawConversationObj.is_ignored : undefined;
+  const isOutbound = typeof item.is_outbound === "boolean" ? item.is_outbound : (typeof payloadObj.is_me === "boolean" ? payloadObj.is_me : undefined);
 
   return {
     id: String(item.id ?? ""),
@@ -900,6 +906,10 @@ function normalizeInboxMessage(input: unknown): OmniInboxData["messages"][number
     bodyHtml: emailBodyHtml || undefined,
     receivedAt: String(item.receivedAt ?? item.received_at ?? ""),
     projectIds,
+    mediaUrls,
+    isIgnored,
+    isOutbound,
+    senderAvatarUrl: payloadObj.sender_avatar_url ? String(payloadObj.sender_avatar_url) : undefined,
     externalId: externalId || undefined,
     rawChannel: rawChannelObj ?? null,
     rawConversation: rawConversationObj ?? null,
@@ -918,19 +928,23 @@ function normalizeInboxConversation(input: unknown): InboxConversationSummary {
     item.channel && typeof item.channel === "object"
       ? (item.channel as Record<string, unknown>)
       : undefined;
+  const conversationObj =
+    item.conversation && typeof item.conversation === "object"
+      ? (item.conversation as Record<string, unknown>)
+      : undefined;
 
   return {
-    id: String(item.id ?? ""),
+    id: String(conversationObj?.id ?? item.id ?? ""),
     channelId: item.channel_id !== undefined ? String(item.channel_id) : undefined,
     provider: String(channelObj?.provider ?? item.provider ?? ""),
-    name: String(item.name ?? item.subject ?? item.external_id ?? ""),
-    avatarUrl: item.avatar_url ? String(item.avatar_url) : undefined,
-    externalId: item.external_id ? String(item.external_id) : undefined,
-    type: item.type ? String(item.type) : undefined,
-    isIgnored: typeof item.is_ignored === "boolean" ? item.is_ignored : undefined,
-    createdAt: item.created_at ? String(item.created_at) : undefined,
-    updatedAt: item.updated_at ? String(item.updated_at) : undefined,
-    lastMessageAt: item.last_message_at ? String(item.last_message_at) : undefined,
+    name: String(conversationObj?.name ?? item.name ?? item.subject ?? item.external_id ?? ""),
+    avatarUrl: conversationObj?.avatar_url ? String(conversationObj.avatar_url) : (item.avatar_url ? String(item.avatar_url) : undefined),
+    externalId: conversationObj?.external_id ? String(conversationObj.external_id) : (item.external_id ? String(item.external_id) : undefined),
+    type: conversationObj?.type ? String(conversationObj.type) : (item.type ? String(item.type) : undefined),
+    isIgnored: typeof conversationObj?.is_ignored === "boolean" ? conversationObj.is_ignored : (typeof item.is_ignored === "boolean" ? item.is_ignored : undefined),
+    createdAt: conversationObj?.created_at ? String(conversationObj.created_at) : (item.created_at ? String(item.created_at) : undefined),
+    updatedAt: conversationObj?.updated_at ? String(conversationObj.updated_at) : (item.updated_at ? String(item.updated_at) : undefined),
+    lastMessageAt: conversationObj?.last_message_at ? String(conversationObj.last_message_at) : (item.last_message_at ? String(item.last_message_at) : undefined),
   };
 }
 

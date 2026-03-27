@@ -126,6 +126,10 @@ export interface PlatformMessage {
   bodyHtml?: string;
   receivedAt: string;
   projectIds: string[];
+  mediaUrls?: string[];
+  isIgnored?: boolean;
+  isOutbound?: boolean;
+  senderAvatarUrl?: string;
   // Optional fields to preserve raw backend payloads / identifiers
   externalId?: string;
   rawChannel?: Record<string, unknown> | null;

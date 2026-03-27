@@ -7,8 +7,16 @@ import { apiClient } from "@/lib/api-client";
 interface MessageRendererProps {
   content: string;
   bodyHtml?: string;
+  mediaUrls?: string[];
   isExpanded?: boolean;
   onToggleExpand?: () => void;
+}
+
+export function getFileUrl(fileId: string) {
+  const apiBase = process.env.NEXT_PUBLIC_API_BASE_URL || process.env.NEXT_PUBLIC_API_URL || "";
+  const base = apiBase.replace(/\/$/, "");
+  const path = base.endsWith('/api') ? `/files/${fileId}/view?redirect=true` : `/api/files/${fileId}/view?redirect=true`;
+  return `${base}${path}`;
 }
 
 function ResolvedMediaItem({ type, url: initialUrl, name }: { type: string, url?: string, name: string }) {
@@ -126,14 +134,11 @@ function sanitizeEmailHtml(rawHtml: string): string {
     const parser = new DOMParser();
     const doc = parser.parseFromString(rawHtml, "text/html");
 
-    doc.querySelectorAll("script, style, meta, link, head, title").forEach(el => el.remove());
+    // Remove only script, meta, link, head, title (but keep <style> in <body>)
+    doc.querySelectorAll("script, meta, link, head, title").forEach(el => el.remove());
 
-    // Optionally remove inline style and class from all nodes so global CSS không ảnh hưởng
+    // Remove event handlers, but KEEP style and class for original email CSS
     doc.body.querySelectorAll("*").forEach(el => {
-      // remove potentially dangerous attributes
-      el.removeAttribute("style");
-      el.removeAttribute("class");
-      // remove event handlers
       Array.from(el.attributes).forEach(attr => {
         if (attr.name.startsWith('on')) el.removeAttribute(attr.name);
       });
@@ -145,20 +150,22 @@ function sanitizeEmailHtml(rawHtml: string): string {
       img.removeAttribute('height');
       img.setAttribute('loading', 'lazy');
       img.setAttribute('decoding', 'async');
-      // Add a small inline style so large email images won't overflow
-      img.setAttribute('style', 'max-width:100% !important; height:auto !important; display:block;');
+      // Add a small inline style so large email images won't overflow, but don't overwrite existing style
+      const prevStyle = img.getAttribute('style') || '';
+      img.setAttribute('style', prevStyle + ';max-width:100% !important; height:auto !important; display:block;');
     });
 
     doc.body.querySelectorAll('table').forEach(tbl => {
-      // Make tables scrollable instead of expanding the layout
-      tbl.setAttribute('style', 'max-width:100% !important; display:block; overflow-x:auto;');
+      // Make tables scrollable instead of expanding the layout, but don't overwrite existing style
+      const prevStyle = tbl.getAttribute('style') || '';
+      tbl.setAttribute('style', prevStyle + ';max-width:100% !important; display:block; overflow-x:auto;');
     });
 
-    // Prepend a small safe CSS to further enforce constraints
+    // Prepend a small safe CSS to further enforce constraints, but allow original <style> to work
     const safetyCss = `\n<style>
       img{max-width:100% !important; height:auto !important; display:block;}
       table{max-width:100% !important; display:block; overflow-x:auto;}
-      *{max-width:100%; box-sizing:border-box; overflow-wrap:anywhere; word-break:break-word;}
+      *{box-sizing:border-box; overflow-wrap:anywhere; word-break:break-word;}
       pre,code{white-space:pre-wrap; overflow-wrap:anywhere; word-break:break-word;}
     </style>\n`;
 
@@ -170,7 +177,7 @@ function sanitizeEmailHtml(rawHtml: string): string {
   }
 }
 
-export function MessageRenderer({ content, bodyHtml, isExpanded, onToggleExpand }: MessageRendererProps) {
+export function MessageRenderer({ content, bodyHtml, mediaUrls, isExpanded, onToggleExpand }: MessageRendererProps) {
   // Email HTML content (priority over pure text)
   if (bodyHtml && bodyHtml.trim()) {
     const safeHtml = sanitizeEmailHtml(bodyHtml);
@@ -234,6 +241,7 @@ export function MessageRenderer({ content, bodyHtml, isExpanded, onToggleExpand 
   // Check for specialized [tag] lines (e.g. [image], [file], [link], [video])
   const lines = content.trim().split('\n');
   const parsedLines = lines.map(line => {
+    // Old format
     const match = line.trim().match(/^\[(image|file|video|link)\]\s+(.+?)(?:\s+-\s+(https?:\/\/[^\s]+))?$/i);
     if (match) {
       return {
@@ -244,6 +252,28 @@ export function MessageRenderer({ content, bodyHtml, isExpanded, onToggleExpand 
         original: line
       };
     }
+    
+    // New format: [file:id:name]
+    const newMatch = line.trim().match(/^\[(file|image|video|link):([^:]+):(.+)\]$/i);
+    if (newMatch) {
+      let type = newMatch[1].toLowerCase();
+      const fileId = newMatch[2];
+      const name = newMatch[3];
+      
+      if (type === 'file') {
+        if (/\.(jpg|jpeg|png|gif|webp)$/i.test(name)) type = 'image';
+        else if (/\.(mp4|webm|ogg|mov)$/i.test(name)) type = 'video';
+      }
+      
+      return {
+        isTag: true,
+        type,
+        name,
+        url: getFileUrl(fileId),
+        original: line
+      };
+    }
+
     return { isTag: false, text: line };
   });
 
@@ -273,9 +303,11 @@ export function MessageRenderer({ content, bodyHtml, isExpanded, onToggleExpand 
 
   return (
     <div className="space-y-1 min-w-0 max-w-full">
-      <div className="text-sm text-slate-700 whitespace-pre-wrap break-words [overflow-wrap:anywhere] leading-relaxed">
-        {displayContent}
-      </div>
+      {displayContent && (
+        <div className="text-sm text-slate-700 whitespace-pre-wrap break-words [overflow-wrap:anywhere] leading-relaxed">
+          {displayContent}
+        </div>
+      )}
       {isLong && onToggleExpand && (
         <button
           onClick={onToggleExpand}
@@ -283,6 +315,13 @@ export function MessageRenderer({ content, bodyHtml, isExpanded, onToggleExpand 
         >
           {isExpanded ? "Thu gọn" : "Xem thêm"}
         </button>
+      )}
+      {mediaUrls && mediaUrls.length > 0 && !hasTags && (
+        <div className="mt-2 space-y-2 flex flex-col items-start min-w-0 max-w-full">
+          {mediaUrls.map((url, i) => (
+            <ResolvedMediaItem key={i} type="image" url={url} name={`Image ${i + 1}`} />
+          ))}
+        </div>
       )}
     </div>
   );
