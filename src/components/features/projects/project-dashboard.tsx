@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { useMemo, useState, useEffect } from "react";
+import { useMemo, useState } from "react";
 import { Project } from "@/types/domain";
 import { getProjectAIOutput } from "@/lib/api";
 import { createProject, deleteProject, getProjects } from "@/lib/api";
@@ -124,7 +124,7 @@ export function ProjectDashboard({ projects }: ProjectDashboardProps) {
                 setNewName("");
                 setNewDesc("");
                 setShowNew(false);
-              } catch (err) {
+              } catch {
                 // TODO: show toast
               } finally {
                 setCreating(false);
@@ -242,7 +242,7 @@ export function ProjectDashboard({ projects }: ProjectDashboardProps) {
                       try {
                         await deleteProject(project.id);
                         setLocalProjects((prev) => prev.filter((p) => p.id !== project.id));
-                      } catch (e) {
+                      } catch {
                         // swallow or show toast
                       }
                     }}
@@ -258,7 +258,7 @@ export function ProjectDashboard({ projects }: ProjectDashboardProps) {
                       try {
                         const res = await getProjectAIOutput(project.id);
                         setLocalProjects((prev) => prev.map((p) => (p.id === project.id ? { ...p, summary: res.summary, todoList: res.todoList } : p)));
-                      } catch (e) {
+                      } catch {
                         // swallow - UI could show toast
                       } finally {
                         setLoadingAiMap((m) => ({ ...m, [project.id]: false }));

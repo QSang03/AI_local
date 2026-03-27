@@ -3,6 +3,7 @@ import { ExternalLink, FileText, Download, Loader2 } from "lucide-react";
 import { formatDistanceToNow } from "date-fns";
 import { vi } from "date-fns/locale";
 import { apiClient } from "@/lib/api-client";
+import Image from "next/image";
 
 interface MessageRendererProps {
   content: string;
@@ -21,12 +22,11 @@ export function getFileUrl(fileId: string) {
 
 function ResolvedMediaItem({ type, url: initialUrl, name }: { type: string, url?: string, name: string }) {
   const [url, setUrl] = useState<string | undefined>(initialUrl);
-  const [loading, setLoading] = useState(true);
+  const [loading, setLoading] = useState(!!initialUrl && initialUrl.startsWith("http"));
 
   useEffect(() => {
     let mounted = true;
     if (!initialUrl || !initialUrl.startsWith("http")) {
-      setLoading(false);
       return;
     }
 
@@ -84,7 +84,7 @@ function ResolvedMediaItem({ type, url: initialUrl, name }: { type: string, url?
   if (type === 'image' && url) {
     return (
       <a href={url} target="_blank" rel="noreferrer" className="block max-w-[240px] overflow-hidden rounded-xl border border-slate-200 hover:opacity-90 transition-opacity bg-slate-50 relative group">
-        <img src={url} alt={name} className="w-full h-auto max-h-48 object-cover" />
+        <Image src={url} alt={name} className="w-full h-auto max-h-48 object-cover" width={240} height={192} unoptimized />
         <div className="absolute inset-0 bg-black/40 opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center">
           <ExternalLink className="text-white drop-shadow-md" size={24} />
         </div>
@@ -191,13 +191,16 @@ export function MessageRenderer({ content, bodyHtml, mediaUrls, isExpanded, onTo
 
   // Check if JSON
   if (content.startsWith("{") && content.endsWith("}")) {
+    let parsed: Record<string, unknown> | null = null;
     try {
-      const parsed = JSON.parse(content);
-      // Attempt to discover format
-      const isZaloOa = parsed.action || parsed.template_type;
-      
-      const title = parsed.title || parsed.text || parsed.message || "Tin nhắn đa phương tiện";
-      const attachment = parsed.attachment || parsed.data_url || "";
+      parsed = JSON.parse(content);
+    } catch {
+      // JSON parse failed, fallback to plain text rendering
+    }
+
+    if (parsed) {
+      const title = String(parsed.title || parsed.text || parsed.message || "Tin nhắn đa phương tiện");
+      const attachment = String(parsed.attachment || parsed.data_url || "");
       
       return (
         <div className="space-y-2">
@@ -214,8 +217,6 @@ export function MessageRenderer({ content, bodyHtml, mediaUrls, isExpanded, onTo
           )}
         </div>
       );
-    } catch {
-      // JSON parse failed, fallback
     }
   }
 

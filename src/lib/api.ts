@@ -4,7 +4,6 @@ import {
   AssignThreadPayload,
   BlacklistEntry,
   ChannelConfig,
-  ChatMessage,
   CreateUserPayload,
   MessageThread,
   InboxConversationSummary,
@@ -20,6 +19,7 @@ import {
   FileUploadResponse,
   FileConfirmResponse,
   FileViewResponse,
+  PlatformMessage,
 } from "@/types/domain";
 import { getAccessToken } from "@/lib/api-client";
 import {
@@ -92,7 +92,6 @@ async function requestJson<T>(path: string, init?: RequestInit): Promise<T> {
   if (typeof window === 'undefined') {
     try {
       // dynamic import to keep client bundle clean
-      // eslint-disable-next-line @typescript-eslint/no-var-requires
       const nextHeaders = await import('next/headers');
       const cookiesFn = (nextHeaders as { cookies?: () => Promise<{ toString?: () => string } | undefined> }).cookies;
       if (typeof cookiesFn === 'function') {
@@ -178,7 +177,6 @@ async function requestJson<T>(path: string, init?: RequestInit): Promise<T> {
             }
             // fall through to error handling for retryRes
             // replace response with retryRes for diagnostic message
-            // eslint-disable-next-line @typescript-eslint/no-unused-vars
             // (we'll use retryRes below)
           }
         }
@@ -426,27 +424,30 @@ export async function getProjectMessagesList(
   projectId: string | number,
   limit: number = 50,
   offset: number = 0
-): Promise<any[]> {
+): Promise<PlatformMessage[]> {
   if (!API_BASE_URL) return [];
   try {
     const qs = new URLSearchParams();
     qs.set("limit", String(limit));
     qs.set("offset", String(offset));
-    return await requestJson<any[]>(`/projects/${projectId}/messages?${qs.toString()}`);
+    return await requestJson<PlatformMessage[]>(`/projects/${projectId}/messages?${qs.toString()}`);
   } catch {
     return [];
   }
 }
 
 export interface ProjectTodoItem {
-  task: string;
-  status: string;
-  priority: string;
+  title: string;
+  description?: string;
+  status: 'todo' | 'in_progress' | 'done' | 'overdue' | string;
+  priority: 'low' | 'medium' | 'high' | string;
 }
 
 export interface ProjectTodoListResponse {
   id: number;
   project_id: number;
+  todo_date: string;
+  status: string;
   items: ProjectTodoItem[];
   created_at?: string;
   updated_at?: string;
@@ -454,15 +455,43 @@ export interface ProjectTodoListResponse {
 
 export async function getProjectTodoList(
   projectId: string | number,
+  date?: string,
 ): Promise<ProjectTodoListResponse | null> {
   if (!API_BASE_URL) {
     return null;
   }
 
   try {
-    return await requestJson<ProjectTodoListResponse>(`/projects/${projectId}/todo-list`);
+    const url = `/projects/${projectId}/todo-list${date ? `?date=${date}` : ""}`;
+    return await requestJson<ProjectTodoListResponse>(url);
   } catch {
     return null;
+  }
+}
+
+export async function updateProjectTodoItemStatus(
+  projectId: string | number,
+  itemIndex: number,
+  status: string,
+): Promise<MutationResult> {
+  if (!API_BASE_URL) {
+    return { ok: false, message: "API not configured" };
+  }
+
+  try {
+    const res = await requestJson<{ message?: string }>(`/projects/${projectId}/todo-list/items`, {
+      method: "PATCH",
+      body: JSON.stringify({ item_index: itemIndex, status }),
+    });
+    return {
+      ok: true,
+      message: res?.message ?? "Trang thai task da duoc cap nhat.",
+    };
+  } catch (error) {
+    return {
+      ok: false,
+      message: parseApiErrorMessage(error, "Khong cap nhat duoc trang thai task."),
+    };
   }
 }
 
@@ -671,17 +700,21 @@ export async function createUser(payload: CreateUserPayload): Promise<MutationRe
 }
 
 export async function updateUser(id: number, payload: UpdateUserPayload): Promise<MutationResult> {
+  console.log('[DEBUG] updateUser target ID:', id, 'payload:', payload);
   if (!USE_MOCK && API_BASE_URL) {
+    console.log('[DEBUG] Calling REAL API: PUT /users/' + id);
     try {
       const res = await requestJson<{ message?: string }>(`/users/${id}`, {
         method: "PUT",
         body: JSON.stringify(payload),
       });
+      console.log('[DEBUG] API Response:', res);
       return {
         ok: true,
         message: res?.message ?? "Cap nhat user thanh cong.",
       };
     } catch (error) {
+      console.error('[DEBUG] API Error:', error);
       return {
         ok: false,
         message: parseApiErrorMessage(error, "Khong cap nhat duoc user."),
@@ -689,6 +722,7 @@ export async function updateUser(id: number, payload: UpdateUserPayload): Promis
     }
   }
 
+  console.log('[DEBUG] Falling back to MOCK mode (USE_MOCK:', USE_MOCK, 'API_BASE_URL:', API_BASE_URL, ')');
   await delay(140);
   return {
     ok: true,
@@ -792,19 +826,14 @@ export async function getProjectAIOutput(projectId: string): Promise<{ summary: 
     // fall back to legacy `/ai` path for compatibility.
     try {
       try {
-        const data = await requestJson<unknown>(`/projects/${projectId}/summary`);
-        const obj = data as Record<string, unknown>;
-        const summary = String(obj.summary ?? obj.content ?? "");
-        const todoList = Array.isArray(obj.todoList) ? (obj.todoList as string[]) : (Array.isArray(obj.todo_list) ? (obj.todo_list as string[]) : []);
+        const data = await requestJson<Record<string, unknown>>(`/projects/${projectId}/summary`);
+        const summary = String(data.summary ?? data.content ?? "");
+        const todoList = Array.isArray(data.todoList) ? (data.todoList as string[]) : (Array.isArray(data.todo_list) ? (data.todo_list as string[]) : []);
         return { summary, todoList };
-      } catch (err) {
+      } catch {
         // If `/summary` not found, try legacy `/ai` endpoint
-        try {
-          const data2 = await requestJson<{ summary?: string; todoList?: string[] }>(`/projects/${projectId}/ai`);
-          return { summary: data2.summary ?? "", todoList: data2.todoList ?? [] };
-        } catch {
-          return { summary: "", todoList: [] };
-        }
+        const data2 = await requestJson<{ summary?: string; todoList?: string[] }>(`/projects/${projectId}/ai`);
+        return { summary: data2.summary ?? "", todoList: data2.todoList ?? [] };
       }
     } catch {
       return { summary: "", todoList: [] };
@@ -915,8 +944,8 @@ function normalizeInboxMessage(input: unknown): OmniInboxData["messages"][number
     rawConversation: rawConversationObj ?? null,
     project: item.project
       ? {
-          id: (item.project as any).id,
-          name: (item.project as any).name,
+          id: String((item.project as { id: number | string; name: string }).id),
+          name: String((item.project as { id: number | string; name: string }).name),
         }
       : undefined,
   };

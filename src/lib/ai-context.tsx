@@ -119,7 +119,9 @@ export function AIProvider({ children }: { children: React.ReactNode }) {
       const res = await fetch("/api/ai/connect", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        signal: (AbortSignal as any).timeout ? (AbortSignal as any).timeout(10000) : undefined,
+        signal: (AbortSignal as { timeout?: (ms: number) => AbortSignal }).timeout 
+          ? (AbortSignal as { timeout: (ms: number) => AbortSignal }).timeout(10000) 
+          : undefined,
       });
       if (!res.ok) throw new Error(await res.text());
       const body = await res.json();
@@ -140,7 +142,7 @@ export function AIProvider({ children }: { children: React.ReactNode }) {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ sessionId: state.sessionId }),
       });
-    } catch (e) {
+    } catch {
       // ignore errors on disconnect
     } finally {
       dispatch({ type: "DISCONNECT_DONE" });
@@ -156,7 +158,7 @@ export function AIProvider({ children }: { children: React.ReactNode }) {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ sessionId: state.sessionId, ...payload }),
       });
-    } catch (e) {
+    } catch {
       // swallow task errors but could set lastError if desired
     } finally {
       dispatch({ type: "TASK_DONE" });

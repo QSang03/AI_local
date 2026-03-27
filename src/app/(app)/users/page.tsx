@@ -282,30 +282,49 @@ export default function UsersPage() {
   }
 
   async function submitEdit(event: FormEvent<HTMLFormElement>) {
+    console.log('[DEBUG] submitEdit triggered');
     event.preventDefault();
-    if (!editingUser) return;
+    if (!editingUser) {
+      console.warn('[DEBUG] No editingUser set');
+      return;
+    }
 
     const errs = validateEditDraft(editDraft);
+    console.log('[DEBUG] Validation errors:', errs);
     setEditErrors(errs);
     setEditTouched({ username: true, email: true, password: true, role: true });
-    if (Object.keys(errs).length > 0) return;
+    if (Object.keys(errs).length > 0) {
+      console.warn('[DEBUG] Validation failed, returning early');
+      return;
+    }
 
+    console.log('[DEBUG] Validation passed, starting update for ID:', editingUser.id);
     setSavingEdit(true);
-    const result = await updateUser(editingUser.id, {
-      username: editDraft.username.trim(),
-      email: editDraft.email.trim(),
-      role: editDraft.role,
-      ...(editDraft.password.trim() ? { password: editDraft.password.trim() } : {}),
-    });
-    setSavingEdit(false);
+    try {
+      const payload = {
+        username: editDraft.username.trim(),
+        email: editDraft.email.trim(),
+        role: editDraft.role,
+        ...(editDraft.password.trim() ? { password: editDraft.password.trim() } : {}),
+      };
+      console.log('[DEBUG] Update payload:', payload);
 
-    if (result.ok) {
-      await loadUsers();
-      setIsEditOpen(false);
-      setEditingUser(null);
-      setToastMessage("✅ Da cap nhat thong tin nguoi dung.");
-    } else {
-      setToastMessage(`❌ ${result.message}`);
+      const result = await updateUser(editingUser.id, payload);
+      console.log('[DEBUG] UpdateUser result:', result);
+      setSavingEdit(false);
+
+      if (result.ok) {
+        await loadUsers();
+        setIsEditOpen(false);
+        setEditingUser(null);
+        setToastMessage("✅ Da cap nhat thong tin nguoi dung.");
+      } else {
+        setToastMessage(`❌ ${result.message}`);
+      }
+    } catch (e) {
+      console.error('[DEBUG] updateUser Exception:', e);
+      setSavingEdit(false);
+      setToastMessage(`❌ Lỗi hệ thống: ${e instanceof Error ? e.message : "Chưa xác định"}`);
     }
   }
 
@@ -686,27 +705,6 @@ export default function UsersPage() {
                 />
                 {editTouched.email && editErrors.email ? <p className="text-xs text-rose-600">{editErrors.email}</p> : null}
               </div>
-
-              <div className="space-y-1">
-                <label htmlFor="edit-password" className="text-sm font-medium text-slate-700">Mat khau moi</label>
-                <input
-                  id="edit-password"
-                  aria-label="Mat khau moi"
-                  type="password"
-                  value={editDraft.password}
-                  onBlur={() => setEditTouched((s) => ({ ...s, password: true }))}
-                  onChange={(e) => {
-                    const password = e.target.value;
-                    setEditDraft((s) => ({ ...s, password }));
-                    setEditErrors((s) => ({ ...s, ...validateEditDraft({ ...editDraft, password }) }));
-                  }}
-                  placeholder="De trong neu khong doi"
-                  className={`w-full rounded-xl border px-3 py-2 outline-none ${editTouched.password && editErrors.password ? "border-rose-400 bg-rose-50" : "border-slate-300 focus:border-slate-700"}`}
-                />
-                <p className="text-xs text-slate-500">De trong neu khong doi.</p>
-                {editTouched.password && editErrors.password ? <p className="text-xs text-rose-600">{editErrors.password}</p> : null}
-              </div>
-
               <div className="space-y-1">
                 <label htmlFor="edit-role" className="text-sm font-medium text-slate-700">Role</label>
                 <select

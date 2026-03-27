@@ -23,8 +23,6 @@ export default function InboxPage() {
 
   useEffect(() => {
     let mounted = true;
-    setLoading(true);
-    setError(null);
 
     if (!loadPromiseRef.current) {
       loadPromiseRef.current = (async () => {

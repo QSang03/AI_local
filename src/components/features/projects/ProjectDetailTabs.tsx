@@ -1,11 +1,17 @@
 "use client";
 
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import { useRouter } from 'next/navigation';
-import { getProjectSummary, sendProjectChatMessage, getProjectTodoList } from '@/lib/api';
-import { BarChart3, MessageCircle, CheckCircle2 } from 'lucide-react';
-import { ArrowLeft, Sparkles, Calendar, Trash2, Plus, Send, Copy, Check, AlertCircle } from 'lucide-react';
+import { getProjectSummary, getProjectTodoList, updateProjectTodoItemStatus } from '@/lib/api';
+import { ProjectSummaryResponse } from '@/lib/api';
+import { PlatformMessage } from '@/types/domain';
+import { BarChart3, MessageCircle, CheckCircle2, Clock } from 'lucide-react';
+import { ArrowLeft, Sparkles, Calendar, Trash2, Plus, Copy, Check, AlertCircle } from 'lucide-react';
 import { formatDistanceToNow, format } from 'date-fns';
+import ReactMarkdown from 'react-markdown';
+import remarkGfm from 'remark-gfm';
+import rehypeRaw from 'rehype-raw';
+import { MessageRenderer } from '@/components/features/inbox/components/MessageRenderer';
 
 type ProjectDetailTabsProps = {
   project: {
@@ -21,6 +27,8 @@ type ProjectDetailTabsProps = {
   ai?: { todoList?: string[]; summary?: string };
   quickSummary?: string;
   chats?: Array<{ messages?: Array<{ id: string; role?: string; content?: string; createdAt?: string }> }>;
+  summaries?: ProjectSummaryResponse[];
+  messagesList?: PlatformMessage[];
 };
 
 function getTodayDateString() {
@@ -33,7 +41,9 @@ function getTodayDateString() {
 
 type TodoItem = {
   id: string;
+  itemIndex: number;
   text: string;
+  description?: string;
   priority: 'low' | 'medium' | 'high';
   dueDate?: string;
   completed: boolean;
@@ -56,16 +66,15 @@ function getPriorityDot(priority: 'low' | 'medium' | 'high'): string {
   }
 }
 
-export default function ProjectDetailTabs({ project, ai, quickSummary, chats }: ProjectDetailTabsProps) {
+export default function ProjectDetailTabs({ project, ai, quickSummary, chats, summaries, messagesList }: ProjectDetailTabsProps) {
   const router = useRouter();
-  const [active, setActive] = useState<'overview'|'todos'>('overview');
+  const [active, setActive] = useState<'overview'|'todos'|'summaries'|'messages'>('overview');
   const [selectedDate, setSelectedDate] = useState<string>(getTodayDateString());
   const [summaryContent, setSummaryContent] = useState<string>((quickSummary ?? '').trim() || (ai?.summary ?? ''));
   const [summarySource, setSummarySource] = useState<'quick' | 'daily'>('quick');
   const [summaryLoading, setSummaryLoading] = useState(false);
   const [summaryError, setSummaryError] = useState<string | null>(null);
-  const [messages, setMessages] = useState<{ id: string; role?: string; content?: string; createdAt?: string }[]>(() => (chats && chats[0] ? chats[0].messages || [] : []));
-  const [newMsg, setNewMsg] = useState('');
+  const [messages] = useState<{ id: string; role?: string; content?: string; createdAt?: string }[]>(() => (chats && chats[0] ? chats[0].messages || [] : []));
   const [todos, setTodos] = useState<TodoItem[]>([]);
   const [todoLoading, setTodoLoading] = useState(false);
   const [todoError, setTodoError] = useState<string | null>(null);
@@ -74,44 +83,40 @@ export default function ProjectDetailTabs({ project, ai, quickSummary, chats }: 
   const [newTodoDueDate, setNewTodoDueDate] = useState('');
   const [copiedId, setCopiedId] = useState<string | null>(null);
 
-  // Load todos from API on component mount
-  useEffect(() => {
-    const loadTodos = async () => {
-      setTodoLoading(true);
-      setTodoError(null);
-      try {
-        const response = await getProjectTodoList(project.id);
-        if (response && response.items) {
-          const apiTodos: TodoItem[] = response.items.map((item, idx) => ({
-            id: `todo-api-${idx}`,
-            text: item.task,
-            priority: (item.priority?.toLowerCase() || 'medium') as 'low' | 'medium' | 'high',
-            completed: item.status?.toLowerCase() === 'completed' || item.status?.toLowerCase() === 'done',
-          }));
-          setTodos(apiTodos);
-        }
-      } catch (err) {
-        console.error('Failed to load todos:', err);
-        setTodoError('Failed to load todo list');
-      } finally {
-        setTodoLoading(false);
-      }
-    };
-
-    loadTodos();
-  }, [project.id]);
-
-  async function handleSend() {
-    if (!newMsg.trim()) return;
-    const payload = { projectId: project.id, content: newMsg.trim() };
+  // Load todos from API on component mount and date change
+  const loadTodosList = useCallback(async () => {
+    setTodoLoading(true);
+    setTodoError(null);
     try {
-      await sendProjectChatMessage(payload);
-      setMessages((s) => [...s, { id: `local-${Date.now()}`, role: 'sale', content: newMsg.trim(), createdAt: new Date().toISOString() }]);
-      setNewMsg('');
-    } catch {
-      // ignore
+      const response = await getProjectTodoList(project.id, selectedDate);
+      if (response && response.items) {
+        const apiTodos: TodoItem[] = response.items.map((item, idx) => ({
+          id: `todo-api-${idx}`,
+          itemIndex: idx,
+          text: item.title,
+          description: item.description,
+          priority: (item.priority?.toLowerCase() || 'medium') as 'low' | 'medium' | 'high',
+          completed: item.status?.toLowerCase() === 'completed' || item.status?.toLowerCase() === 'done',
+        }));
+        setTodos(apiTodos);
+      } else {
+        setTodos([]);
+        if (response && response.items === undefined) {
+           setTodoError('Todo list items not found in response');
+        }
+      }
+    } catch (err) {
+      console.error('Failed to load todos:', err);
+      setTodoError('Failed to load todo list');
+    } finally {
+      setTodoLoading(false);
     }
-  }
+  }, [project.id, selectedDate]);
+
+  useEffect(() => {
+    loadTodosList();
+  }, [loadTodosList]);
+
 
   async function handleLoadSummaryByDate() {
     if (!selectedDate) return;
@@ -136,14 +141,14 @@ export default function ProjectDetailTabs({ project, ai, quickSummary, chats }: 
     
     // Load quick summary from API (no date parameter)
     getProjectSummary(project.id)
-      .then((res) => {
+      .then((res: ProjectSummaryResponse | null) => {
         if (res && res.content) {
           setSummaryContent(res.content);
         } else {
           setSummaryContent((quickSummary ?? '').trim() || (ai?.summary ?? 'No summary available'));
         }
       })
-      .catch((err) => {
+      .catch((err: Error | unknown) => {
         console.error('Failed to load quick summary:', err);
         setSummaryContent((quickSummary ?? '').trim() || (ai?.summary ?? 'No summary available'));
       })
@@ -156,6 +161,7 @@ export default function ProjectDetailTabs({ project, ai, quickSummary, chats }: 
     if (!newTodoText.trim()) return;
     const newTodo: TodoItem = {
       id: `todo-${Date.now()}`,
+      itemIndex: -1, // Locally added tasks don't have an index yet
       text: newTodoText.trim(),
       priority: newTodoPriority,
       dueDate: newTodoDueDate || undefined,
@@ -171,10 +177,32 @@ export default function ProjectDetailTabs({ project, ai, quickSummary, chats }: 
     setTodos((prev) => prev.filter((t) => t.id !== id));
   }
 
-  function toggleTodoComplete(id: string) {
+  async function toggleTodoComplete(id: string) {
+    const todo = todos.find(t => t.id === id);
+    if (!todo) return;
+
+    const newStatus = !todo.completed ? 'done' : 'todo';
+    
+    // Optimistic update
     setTodos((prev) =>
       prev.map((t) => (t.id === id ? { ...t, completed: !t.completed } : t))
     );
+
+    try {
+      const res = await updateProjectTodoItemStatus(project.id, todo.itemIndex, newStatus);
+      if (!res.ok) {
+        throw new Error(res.message);
+      }
+      // Reload to ensure sync with server
+      loadTodosList();
+    } catch (err) {
+      console.error('Failed to update todo status:', err);
+      // Revert optimistic update
+      setTodos((prev) =>
+        prev.map((t) => (t.id === id ? { ...t, completed: todo.completed } : t))
+      );
+      alert(`Khong the cap nhat trang thai: ${err instanceof Error ? err.message : 'Unknown error'}`);
+    }
   }
 
   function copyToClipboard(text: string) {
@@ -234,6 +262,8 @@ export default function ProjectDetailTabs({ project, ai, quickSummary, chats }: 
           {[
             { id: 'overview', label: 'Overview', icon: BarChart3 },
             { id: 'todos', label: 'Todos', count: todos.length, icon: CheckCircle2 },
+            { id: 'summaries', label: 'Summaries', count: summaries?.length, icon: Sparkles },
+            { id: 'messages', label: 'Messages', count: messagesList?.length, icon: MessageCircle },
           ].map((tab) => {
             const Icon = tab.icon;
             const isActive = active === tab.id;
@@ -372,8 +402,24 @@ export default function ProjectDetailTabs({ project, ai, quickSummary, chats }: 
                   {summaryError ? (
                     <div className="rounded-lg bg-red-50 p-3 text-sm text-red-700 border border-red-200">{summaryError}</div>
                   ) : (
-                    <div className="rounded-lg bg-slate-50 p-4 text-sm text-slate-700 whitespace-pre-wrap min-h-[120px] font-mono">
-                      {summaryContent || 'No summary available. Select a date and click Load.'}
+                    <div className="rounded-lg bg-slate-50 p-4 text-sm text-slate-700 min-h-[120px]">
+                      <ReactMarkdown 
+                        remarkPlugins={[remarkGfm]}
+                        rehypePlugins={[rehypeRaw]}
+                        components={{
+                          table: ({ ...props }) => <div className="overflow-x-auto"><table className="w-full text-left border-collapse mt-2 mb-2 text-xs" {...props} /></div>,
+                          th: ({ ...props }) => <th className="bg-slate-100 font-semibold text-slate-700 px-3 py-1 border border-slate-300" {...props} />,
+                          td: ({ ...props }) => <td className="px-3 py-1.5 border border-slate-200 text-slate-600 leading-relaxed min-w-[100px]" {...props} />,
+                          p: ({ ...props }) => <p className="mt-2 mb-2 leading-relaxed" {...props} />,
+                          ul: ({ ...props }) => <ul className="list-disc pl-5 mt-2 mb-2 space-y-1" {...props} />,
+                          ol: ({ ...props }) => <ol className="list-decimal pl-5 mt-2 mb-2 space-y-1" {...props} />,
+                          h1: ({ ...props }) => <h1 className="text-lg font-bold mt-4 mb-2 text-slate-900" {...props} />,
+                          h2: ({ ...props }) => <h2 className="text-base font-bold mt-3 mb-2 text-slate-800" {...props} />,
+                          h3: ({ ...props }) => <h3 className="text-sm font-bold mt-2 mb-2 text-slate-800" {...props} />,
+                        }}
+                      >
+                        {summaryContent || '*No summary available. Select a date and click Load.*'}
+                      </ReactMarkdown>
                     </div>
                   )}
 
@@ -553,10 +599,15 @@ export default function ProjectDetailTabs({ project, ai, quickSummary, chats }: 
                               {todo.completed && <Check size={14} className="text-indigo-600" />}
                             </button>
 
-                            <div className="flex-1 min-w-0">
-                              <p className={`text-sm ${todo.completed ? 'line-through text-slate-500' : 'text-slate-800'}`}>
-                                {todo.text}
-                              </p>
+                              <div className="flex-1 min-w-0">
+                                <p className={`text-sm font-semibold ${todo.completed ? 'line-through text-slate-500' : 'text-slate-800'}`}>
+                                  {todo.text}
+                                </p>
+                                {todo.description && (
+                                  <p className={`text-xs mt-1 ${todo.completed ? 'line-through text-slate-400' : 'text-slate-500'}`}>
+                                    {todo.description}
+                                  </p>
+                                )}
 
                               {/* Due date */}
                               {todo.dueDate && (
@@ -666,7 +717,174 @@ export default function ProjectDetailTabs({ project, ai, quickSummary, chats }: 
             )}
           </div>
         )}
+
+        {active === 'summaries' && (
+          <ProjectSummariesTab summaries={summaries || []} />
+        )}
+
+        {active === 'messages' && (
+          <ProjectMessagesTab messages={messagesList || []} />
+        )}
       </div>
+    </div>
+  );
+}
+
+function ProjectSummariesTab({ summaries }: { summaries: ProjectSummaryResponse[] }) {
+  if (!summaries || summaries.length === 0) {
+    return (
+      <div className="flex flex-col items-center justify-center p-12 text-slate-400">
+        <Sparkles className="mb-2 h-10 w-10 text-slate-300" />
+        <p>No summaries available.</p>
+      </div>
+    );
+  }
+
+  return (
+    <div className="w-full space-y-6">
+      {summaries.map((summary: ProjectSummaryResponse, idx: number) => (
+        <div key={idx} className="rounded-xl border border-slate-200 bg-white p-6 shadow-sm">
+          <div className="flex items-center justify-between mb-4">
+            <h3 className="text-lg font-semibold text-slate-800 flex items-center gap-2">
+              <Calendar className="h-5 w-5 text-indigo-500" />
+              {summary.summary_date || 'Unknown Date'}
+            </h3>
+            <span className="rounded-full bg-slate-100 px-3 py-1 text-xs font-medium text-slate-600">
+              {summary.status || 'Archived'}
+            </span>
+          </div>
+          <div className="text-slate-700 bg-slate-50/50 p-4 rounded-lg border border-slate-100">
+            <ReactMarkdown 
+              remarkPlugins={[remarkGfm]}
+              rehypePlugins={[rehypeRaw]}
+              components={{
+                table: ({ ...props }) => <div className="overflow-x-auto"><table className="w-full text-left border-collapse mt-4 mb-4 text-sm" {...props} /></div>,
+                th: ({ ...props }) => <th className="bg-slate-100 font-semibold text-slate-700 px-4 py-2 border border-slate-300" {...props} />,
+                td: ({ ...props }) => <td className="px-4 py-3 border border-slate-200 text-slate-600 leading-relaxed min-w-[120px]" {...props} />,
+                p: ({ ...props }) => <p className="mt-3 mb-3 leading-relaxed" {...props} />,
+                ul: ({ ...props }) => <ul className="list-disc pl-6 mt-3 mb-3 space-y-1" {...props} />,
+                ol: ({ ...props }) => <ol className="list-decimal pl-6 mt-3 mb-3 space-y-1" {...props} />,
+                h1: ({ ...props }) => <h1 className="text-xl font-bold mt-6 mb-3 text-slate-900" {...props} />,
+                h2: ({ ...props }) => <h2 className="text-lg font-bold mt-5 mb-3 text-slate-800" {...props} />,
+                h3: ({ ...props }) => <h3 className="text-base font-bold mt-4 mb-3 text-slate-800" {...props} />,
+                strong: ({ ...props }) => <strong className="font-semibold text-slate-900" {...props} />,
+                a: ({ ...props }) => <a className="text-indigo-600 hover:text-indigo-800 hover:underline font-medium" {...props} />,
+                blockquote: ({ ...props }) => <blockquote className="border-l-4 border-indigo-200 pl-4 italic text-slate-600 my-4" {...props} />
+              }}
+            >
+              {summary.content || '*Empty summary*'}
+            </ReactMarkdown>
+          </div>
+        </div>
+      ))}
+    </div>
+  );
+}
+function ProjectMessagesTab({ messages }: { messages: PlatformMessage[] }) {
+  const [activeFilter, setActiveFilter] = useState<'all' | 'zalo' | 'whatsapp' | 'email'>('all');
+  const [expandedMessages, setExpandedMessages] = useState<Record<number, boolean>>({});
+
+  const toggleExpand = (idx: number) => {
+    setExpandedMessages(prev => ({ ...prev, [idx]: !prev[idx] }));
+  };
+
+  const getChannelDisplayName = (channel: string | { provider?: string; name?: string } | null | undefined): string => {
+    if (!channel) return '';
+    if (typeof channel === 'string') return channel;
+    if (typeof channel === 'object') {
+      return (channel.provider || channel.name || 'Unknown').toString();
+    }
+    return String(channel);
+  };
+
+  const getMessageCategory = (msg: PlatformMessage): 'zalo' | 'whatsapp' | 'email' | 'other' => {
+    const channelName = getChannelDisplayName(msg.channel).toLowerCase();
+    if (channelName.includes('zalo')) return 'zalo';
+    if (channelName.includes('whatsapp') || channelName.includes('wa')) return 'whatsapp';
+    if (channelName.includes('email') || channelName.includes('gmail')) return 'email';
+    return 'other';
+  };
+
+  const filteredMessages = activeFilter === 'all' 
+    ? messages 
+    : messages.filter((m: PlatformMessage) => getMessageCategory(m) === activeFilter);
+
+  return (
+    <div className="w-full space-y-4">
+      {/* Filters */}
+      {messages && messages.length > 0 && (
+        <div className="flex items-center gap-2 pb-4 pt-1 mb-2 border-b border-slate-200">
+          <span className="text-sm font-medium text-slate-500 mr-2 uppercase tracking-wide">Filters:</span>
+          {(['all', 'zalo', 'whatsapp', 'email'] as const).map(f => {
+            const count = f === 'all' ? messages.length : messages.filter((m: PlatformMessage) => getMessageCategory(m) === f).length;
+            
+            return (
+              <button
+                key={f}
+                onClick={() => setActiveFilter(f)}
+                disabled={count === 0 && f !== 'all'}
+                className={`px-3 py-1.5 flex items-center gap-1.5 rounded-full text-xs font-semibold uppercase tracking-wider transition-colors focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:ring-offset-1 ${
+                  activeFilter === f 
+                    ? 'bg-indigo-600 text-white shadow-sm' 
+                    : count === 0 && f !== 'all'
+                      ? 'bg-slate-50 text-slate-400 opacity-60 cursor-not-allowed'
+                      : 'bg-white text-slate-600 border border-slate-200 hover:bg-slate-50 hover:text-indigo-600'
+                }`}
+              >
+                {f}
+                <span className={`px-1.5 py-0.5 rounded-full text-[10px] leading-none ${
+                  activeFilter === f ? 'bg-white/20' : 'bg-slate-100 text-slate-500'
+                }`}>
+                  {count}
+                </span>
+              </button>
+            )
+          })}
+        </div>
+      )}
+
+      {filteredMessages.length === 0 ? (
+        <div className="flex flex-col items-center justify-center p-12 text-slate-400">
+          <MessageCircle className="mb-2 h-10 w-10 text-slate-200" />
+          <p>No messages found for this channel.</p>
+        </div>
+      ) : (
+        filteredMessages.map((msg: PlatformMessage, idx: number) => {
+          const receivedAt = msg.receivedAt ? new Date(msg.receivedAt) : new Date();
+          const sender = msg.senderDisplay || 'Unknown User';
+          return (
+            <div key={idx} className="rounded-xl border border-slate-200 bg-white p-4 shadow-sm flex items-start gap-4 transition-colors hover:bg-slate-50">
+              <div className={`flex h-10 w-10 flex-shrink-0 items-center justify-center rounded-full text-sm font-semibold uppercase 
+                ${idx % 2 === 0 ? 'bg-indigo-100 text-indigo-700' : 'bg-teal-100 text-teal-700'}`}>
+                {sender.substring(0, 2)}
+              </div>
+              <div className="flex-grow min-w-0">
+                <div className="flex items-center justify-between mb-1">
+                  <span className="font-semibold text-slate-900 truncate pr-4">{sender}</span>
+                  <span className="flex-shrink-0 text-xs font-medium text-slate-400 whitespace-nowrap flex items-center gap-1">
+                    <Clock className="w-3 h-3" />
+                    {format(receivedAt, 'MMM d, h:mm a')}
+                  </span>
+                </div>
+                <div className="text-sm text-slate-700 rounded-lg bg-indigo-50/10 p-3 mt-2 border border-slate-100 shadow-sm overflow-hidden">
+                  <MessageRenderer 
+                    content={msg.content || ''} 
+                    bodyHtml={msg.bodyHtml}
+                    mediaUrls={msg.mediaUrls}
+                    isExpanded={expandedMessages[idx]}
+                    onToggleExpand={() => toggleExpand(idx)}
+                  />
+                </div>
+                {msg.channel && (
+                  <div className="mt-3 text-xs font-semibold text-slate-500 inline-flex items-center gap-1 rounded bg-slate-100 px-2 py-1 uppercase tracking-wider">
+                    {getChannelDisplayName(msg.channel)}
+                  </div>
+                )}
+              </div>
+            </div>
+          );
+        })
+      )}
     </div>
   );
 }

@@ -6,7 +6,6 @@ import { Project } from '@/types/domain';
 import Toast from '@/components/ui/Toast';
 import { updateProject, getProjects, getOwners, deleteProject } from '@/lib/api';
 import EditProjectForm from '@/components/features/projects/EditProjectForm';
-import ConfirmationModal from '@/components/ui/ConfirmationModal';
 import CreateProjectModal from '@/components/features/projects/CreateProjectModal';
 import { Search, Plus, Edit2, Trash2, ChevronDown, X, AlertTriangle } from 'lucide-react';
 import { formatDistanceToNow } from 'date-fns';
@@ -61,7 +60,7 @@ export default function ManageProjectsClient({ initialProjects }: { initialProje
         const paged = await getProjects({ page: pg, pageSize: rowsPerPage, q: search, ownerId: ownerIdToUse });
         if (!mounted) return;
         let items = paged.items;
-        if (statusFilter) items = items.filter((it) => it.status === statusFilter);
+        if (statusFilter) items = items.filter((it: Project) => it.status === statusFilter);
         setProjects(items);
         setTotal(paged.total);
         setOwnerFilterId(ownerIdToUse || "");
@@ -104,7 +103,7 @@ export default function ManageProjectsClient({ initialProjects }: { initialProje
         try {
           const res = await getOwners({ q, page: 1, pageSize: 6 });
           if (!mounted) return;
-          setOwnerSuggestions(res.items.map((i) => ({ id: i.id, name: i.name })));
+          setOwnerSuggestions(res.items.map((i: { id: string; name: string }) => ({ id: i.id, name: i.name })));
         } catch {
           // swallow
         }
@@ -160,16 +159,6 @@ export default function ManageProjectsClient({ initialProjects }: { initialProje
         return 'bg-blue-100 text-blue-700 border border-blue-200';
       default:
         return 'bg-slate-100 text-slate-700 border border-slate-200';
-    }
-  }
-
-  function getStatusColor(status?: string): string {
-    switch (status) {
-      case 'active': return '#10b981';
-      case 'urgent': case 'pending': return '#f59e0b';
-      case 'closed': return '#64748b';
-      case 'new': return '#3b82f6';
-      default: return '#64748b';
     }
   }
 
@@ -739,7 +728,7 @@ export default function ManageProjectsClient({ initialProjects }: { initialProje
 
             <div className="text-sm text-slate-600">
               This action cannot be undone. All data for{' '}
-              <span className="font-semibold">"{pageItems.find((p) => p.id === confirmDeleteId)?.name || 'this project'}"</span> will be
+              <span className="font-semibold">&quot;{pageItems.find((p) => p.id === confirmDeleteId)?.name || 'this project'}&quot;</span> will be
               permanently deleted.
             </div>
 

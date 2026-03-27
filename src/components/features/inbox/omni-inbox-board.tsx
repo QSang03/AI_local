@@ -1,6 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import Image from "next/image";
 import { AnimatePresence, motion } from "framer-motion";
 import { formatDistanceToNow } from "date-fns";
 import { vi } from "date-fns/locale";
@@ -37,12 +38,6 @@ type InboxViewState = {
   selectedByChannel: Partial<Record<Exclude<ChannelFilter, "all">, string>>;
 };
 
-function mapProviderToChannel(provider?: string): MessageChannel {
-  const p = String(provider ?? "").toLowerCase();
-  if (p.includes("zalo")) return "zalo";
-  if (p.includes("whatsapp")) return "whatsapp";
-  return "email";
-}
 
 function timeAgo(dateStr: string) {
   try {
@@ -286,7 +281,7 @@ export function OmniInboxBoard({
     setMessagesByConversation({});
     setMessageMetaByConversation({});
     void loadConversationsPage(0, false);
-  }, [providerParam, loadConversationsPage]);
+  }, [providerParam, loadConversationsPage, initialConversations?.length]);
 
   useEffect(() => {
     if (conversations.length === 0) return;
@@ -644,7 +639,7 @@ export function OmniInboxBoard({
                               <div className="shrink-0 pt-1">
                                 <div className="w-9 h-9 rounded-full bg-slate-200 border border-slate-300 flex items-center justify-center overflow-hidden shadow-sm">
                                   {msg.senderAvatarUrl ? (
-                                    <img src={msg.senderAvatarUrl} alt={msg.senderDisplay} className="w-full h-full object-cover" />
+                                    <Image src={msg.senderAvatarUrl} alt={msg.senderDisplay || ""} className="w-full h-full object-cover" width={36} height={36} unoptimized />
                                   ) : (
                                     <span className="text-[12px] font-bold text-slate-500">
                                       {msg.senderDisplay?.slice(0, 1).toUpperCase() || "?"}
@@ -662,7 +657,7 @@ export function OmniInboxBoard({
                               )}
                               
                               <div
-                                className={`relative inline-block border max-w-[85%] min-w-0 rounded-2xl px-3.5 py-2 shadow-sm ${
+                                className={`relative inline-block border max-w-[85%] min-w-[64px] rounded-2xl px-3.5 py-2 shadow-sm ${
                                   isOutbound 
                                     ? "bg-[#E5EFFF] border-blue-100 rounded-tr-sm" 
                                     : "bg-white border-slate-200 rounded-tl-sm"
@@ -681,29 +676,44 @@ export function OmniInboxBoard({
                                     }
                                   />
                                 </div>
-                                <div className={`absolute bottom-1.5 right-2.5 flex items-center gap-1 ${isOutbound ? 'text-blue-500/70' : 'text-slate-400'}`}>
+                                <div className={`absolute bottom-1.5 ${isOutbound ? 'right-2.5' : 'left-3.5'} flex items-center gap-1 ${isOutbound ? 'text-blue-500/70' : 'text-slate-400'}`}>
                                   <span className="text-[10px] font-medium tabular-nums">{timeStr}</span>
                                 </div>
                               </div>
 
                               {((msg.projectIds?.length ?? 0) > 0 || msg.project?.name) && (
                                 <div className={`mt-1.5 flex flex-wrap gap-1.5 ${isOutbound ? "justify-end" : "justify-start"}`}>
-                                  {(msg.projectIds ?? []).map((pid) => (
-                                    <span
-                                      key={`${msg.id}-${pid}`}
-                                      className="inline-flex items-center rounded-full border border-indigo-200 bg-indigo-50 px-2 py-0.5 text-[10px] font-medium text-indigo-700"
-                                    >
-                                      {projectNameById.get(String(pid)) ?? `Project #${pid}`}
-                                    </span>
-                                  ))}
-                                  {msg.project && (
-                                    <span
-                                      key={`${msg.id}-single`}
-                                      className="inline-flex items-center rounded-full border border-teal-200 bg-teal-50 px-2 py-0.5 text-[10px] font-medium text-teal-700"
-                                    >
-                                      {msg.project.name}
-                                    </span>
-                                  )}
+                                  {(() => {
+                                    const displayedIds = new Set<string>();
+                                    const tags: React.ReactNode[] = [];
+
+                                    (msg.projectIds ?? []).forEach((pid) => {
+                                      const sid = String(pid);
+                                      if (displayedIds.has(sid)) return;
+                                      displayedIds.add(sid);
+                                      tags.push(
+                                        <span
+                                          key={`${msg.id}-${sid}`}
+                                          className="inline-flex items-center rounded-full border border-indigo-200 bg-indigo-50 px-2 py-0.5 text-[10px] font-medium text-indigo-700"
+                                        >
+                                          {projectNameById.get(sid) ?? `Project #${sid}`}
+                                        </span>
+                                      );
+                                    });
+
+                                    if (msg.project && !displayedIds.has(String(msg.project.id))) {
+                                      tags.push(
+                                        <span
+                                          key={`${msg.id}-single`}
+                                          className="inline-flex items-center rounded-full border border-teal-200 bg-teal-50 px-2 py-0.5 text-[10px] font-medium text-teal-700"
+                                        >
+                                          {msg.project.name}
+                                        </span>
+                                      );
+                                    }
+
+                                    return tags;
+                                  })()}
                                 </div>
                               )}
                             </div>

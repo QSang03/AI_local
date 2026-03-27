@@ -4,7 +4,6 @@ import React, { useEffect, useState } from 'react';
 import { Project } from '@/types/domain';
 import { getProjectSummary } from '@/lib/api';
 
-type OwnerOption = { id: string; name: string };
 
 type ExtendedProject = Project & Partial<{ tags: string[]; startDate: string; endDate: string; ownerName: string }>;
 
@@ -66,13 +65,11 @@ export default function EditProjectForm({ project, onCancel, onSave, loading = f
     const projectId = String(project?.id ?? '').trim();
     if (!projectId || projectId.startsWith('temp-')) return;
 
-    let mounted = true;
     void (async () => {
       await loadQuickSummary(projectId);
     })();
 
     return () => {
-      mounted = false;
     };
   }, [project?.id]);
 
