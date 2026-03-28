@@ -1,11 +1,13 @@
 'use client';
 
-import React, { useEffect } from 'react';
-import { Server, Power, Loader2 } from 'lucide-react';
+import React, { useEffect, useState } from 'react';
+import { Server, Power, Loader2, ChevronDown, CheckCircle2, AlertCircle, PlayCircle } from 'lucide-react';
 import { useAiStore } from '../store/useAiStore';
+import { motion, AnimatePresence } from 'framer-motion';
 
 export default function OpenClawAiWidget() {
   const { aiStatus, wakingUp, connectWs, wakeupSession } = useAiStore();
+  const [isHovered, setIsHovered] = useState(false);
 
   useEffect(() => {
     // Connect WebSocket and get cleanup fn
@@ -18,73 +20,108 @@ export default function OpenClawAiWidget() {
   const showButton = (aiStatus === 'stopped' || aiStatus === 'not_exists' || aiStatus === 'error') && !wakingUp;
 
   let statusText = '';
-  let statusColor = 'text-gray-500';
+  let dotColor = 'bg-gray-400';
+  let statusIcon = <Server size={14} />;
+
   switch (aiStatus) {
     case 'loading':
       statusText = 'Đang kiểm tra kết nối...';
-      statusColor = 'text-gray-500';
+      dotColor = 'bg-gray-400';
+      statusIcon = <Loader2 size={14} className="animate-spin text-slate-400" />;
       break;
     case 'ready':
-      statusText = 'Đã kết nối và sẵn sàng';
-      statusColor = 'text-emerald-600';
+      statusText = 'AI Container: Sẵn sàng';
+      dotColor = 'bg-emerald-500';
+      statusIcon = <CheckCircle2 size={14} className="text-emerald-500" />;
       break;
     case 'starting':
       statusText = wakingUp ? 'Đang gửi lệnh khởi động...' : 'Đang khởi động...';
-      statusColor = 'text-amber-600';
+      dotColor = 'bg-amber-500';
+      statusIcon = <Loader2 size={14} className="animate-spin text-amber-500" />;
       break;
     case 'stopped':
-      statusText = 'Hệ thống đang tạm ngưng';
-      statusColor = 'text-gray-500';
+      statusText = 'AI Container: Tạm ngưng';
+      dotColor = 'bg-slate-400';
+      statusIcon = <PlayCircle size={14} className="text-slate-400" />;
       break;
     case 'not_exists':
-      statusText = 'Container chưa được tạo';
-      statusColor = 'text-gray-500';
+      statusText = 'AI Container: Chưa tạo';
+      dotColor = 'bg-slate-300';
+      statusIcon = <AlertCircle size={14} className="text-slate-400" />;
       break;
     case 'error':
-      statusText = 'Lỗi kết nối';
-      statusColor = 'text-rose-600';
+      statusText = 'AI Container: Lỗi kết nối';
+      dotColor = 'bg-rose-500';
+      statusIcon = <AlertCircle size={14} className="text-rose-500" />;
       break;
   }
 
-  const iconBg = isReady
-    ? 'bg-emerald-50 text-emerald-600 border-emerald-100'
-    : isStarting
-    ? 'bg-amber-50 text-amber-600 border-amber-100'
-    : aiStatus === 'error'
-    ? 'bg-rose-50 text-rose-600 border-rose-100'
-    : 'bg-gray-50 text-gray-400 border-gray-200';
-
   return (
-    <div className="fixed top-6 right-6 z-[999]">
-      <div className="flex items-center gap-3 p-2 md:pr-3 md:pl-2 bg-white/80 backdrop-blur-md shadow-lg border border-gray-100 rounded-full transition-all duration-300">
-
-        <div className="flex items-center gap-3 pl-1">
-          <div className={`flex items-center justify-center w-10 h-10 rounded-full shadow-inner border transition-colors duration-300 ${iconBg}`}>
-            {aiStatus === 'loading' || isStarting
-              ? <Loader2 size={18} className="animate-spin" />
-              : <Server size={18} />
-            }
+    <div 
+      className="fixed top-4 right-4 z-[999]"
+      onMouseEnter={() => setIsHovered(true)}
+      onMouseLeave={() => setIsHovered(false)}
+    >
+      <div className="relative">
+        {/* Compact Trigger Area */}
+        <motion.div 
+          className="flex items-center gap-2 p-1.5 pr-3 bg-white border border-slate-200 rounded-full shadow-lg shadow-slate-200/50 cursor-pointer hover:border-indigo-300 transition-all"
+          layout
+        >
+          <div className="relative shrink-0">
+            <div className="w-8 h-8 rounded-full bg-slate-50 border border-slate-100 flex items-center justify-center text-slate-500">
+              <Server size={16} />
+            </div>
+            {/* Dot Indicator */}
+            <div className={`absolute -bottom-0.5 -right-0.5 w-3 h-3 rounded-full border-2 border-white ${dotColor} ${isStarting ? 'animate-pulse' : ''}`} />
           </div>
-
-          <div className="hidden md:block pr-2">
-            <h3 className="text-sm font-semibold text-gray-800 leading-tight">
-              OpenClaw AI Container
-            </h3>
-            <p className={`text-xs font-medium ${statusColor}`}>
-              {statusText}
-            </p>
+          
+          <div className="flex items-center gap-1">
+             <span className="text-[11px] font-bold text-slate-700 tracking-tight">AI Status</span>
+             <ChevronDown size={12} className={`text-slate-400 transition-transform ${isHovered ? 'rotate-180' : ''}`} />
           </div>
-        </div>
+        </motion.div>
 
-        {showButton && (
-          <button
-            onClick={wakeupSession}
-            className="flex items-center gap-2 px-4 py-2 rounded-full font-medium text-sm transition-all duration-300 shadow-sm bg-purple-600 text-white hover:bg-purple-700 hover:shadow-md"
-          >
-            <Power size={16} />
-            <span className="hidden md:inline">Bật kết nối AI</span>
-          </button>
-        )}
+        {/* Popover */}
+        <AnimatePresence>
+          {isHovered && (
+            <motion.div 
+              initial={{ opacity: 0, y: 10, scale: 0.95 }}
+              animate={{ opacity: 1, y: 0, scale: 1 }}
+              exit={{ opacity: 0, y: 10, scale: 0.95 }}
+              className="absolute top-full right-0 mt-3 w-64 bg-white border border-slate-100 rounded-2xl shadow-2xl p-4 overflow-hidden"
+            >
+              <div className="flex items-start gap-3">
+                 <div className="mt-0.5">
+                    {statusIcon}
+                 </div>
+                 <div className="flex-1">
+                    <h4 className="text-[13px] font-bold text-slate-900 mb-0.5">OpenClaw AI Container</h4>
+                    <p className="text-[11px] text-slate-500 font-medium leading-relaxed">
+                       {statusText}
+                    </p>
+                 </div>
+              </div>
+
+              {showButton && (
+                <div className="mt-4 pt-3 border-t border-slate-50">
+                  <button
+                    onClick={wakeupSession}
+                    className="w-full flex items-center justify-center gap-2 py-2 bg-indigo-600 text-white rounded-xl text-[12px] font-bold hover:bg-indigo-700 transition-all shadow-md shadow-indigo-600/20 active:scale-[0.98]"
+                  >
+                    <Power size={14} />
+                    Bật kết nối AI
+                  </button>
+                </div>
+              )}
+              
+              <div className="mt-3 flex items-center justify-between text-[10px] text-slate-400 font-medium bg-slate-50 -mx-4 -mb-4 px-4 py-2 border-t border-slate-100">
+                 <span>v1.2.4</span>
+                 <span className="flex items-center gap-1"><div className="w-1.5 h-1.5 rounded-full bg-emerald-500" /> API Connected</span>
+              </div>
+            </motion.div>
+          )}
+        </AnimatePresence>
       </div>
     </div>
   );

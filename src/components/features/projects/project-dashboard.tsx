@@ -215,9 +215,28 @@ export function ProjectDashboard({ projects }: ProjectDashboardProps) {
                   AI Todo
                 </p>
                 <ul className="mt-2 space-y-1 text-sm text-slate-700">
-                  {project.todoList.map((item) => (
-                    <li key={item}>- {item}</li>
-                  ))}
+                  {project.latestTodo?.items && project.latestTodo.items.length > 0 ? (
+                    project.latestTodo.items.map((item, idx) => (
+                      <li key={idx} className="flex items-start gap-2">
+                        <span className="mt-2 h-1.5 w-1.5 shrink-0 rounded-full bg-slate-400" />
+                        <div className="flex flex-col">
+                          <span className="font-medium">{item.title}</span>
+                          {item.description && (
+                            <span className="text-xs text-slate-500">{item.description}</span>
+                          )}
+                        </div>
+                      </li>
+                    ))
+                  ) : project.todoList && project.todoList.length > 0 ? (
+                    project.todoList.map((item) => (
+                      <li key={item} className="flex items-start gap-2">
+                        <span className="mt-2 h-1.5 w-1.5 shrink-0 rounded-full bg-slate-400" />
+                        <span>{item}</span>
+                      </li>
+                    ))
+                  ) : (
+                    <li className="text-slate-400 italic">Chua co todo.</li>
+                  )}
                 </ul>
               </div>
 
@@ -257,7 +276,18 @@ export function ProjectDashboard({ projects }: ProjectDashboardProps) {
                       setLoadingAiMap((m) => ({ ...m, [project.id]: true }));
                       try {
                         const res = await getProjectAIOutput(project.id);
-                        setLocalProjects((prev) => prev.map((p) => (p.id === project.id ? { ...p, summary: res.summary, todoList: res.todoList } : p)));
+                        setLocalProjects((prev) =>
+                          prev.map((p) =>
+                            p.id === project.id
+                              ? {
+                                  ...p,
+                                  summary: res.summary || p.summary,
+                                  todoList: res.todoList ?? p.todoList,
+                                  latestTodo: res.latestTodo ?? p.latestTodo,
+                                }
+                              : p,
+                          ),
+                        );
                       } catch {
                         // swallow - UI could show toast
                       } finally {

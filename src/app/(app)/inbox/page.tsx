@@ -80,7 +80,7 @@ export default function InboxPage() {
   }, []);
 
   return (
-    <div className="h-[calc(100vh-2rem)] md:h-[calc(100vh-4rem)] flex flex-col min-w-0">
+    <div className="h-screen flex flex-col min-w-0 overflow-hidden">
       {loading ? <p className="text-sm text-slate-500">Dang tai inbox...</p> : null}
       {error ? (
         <div className="rounded-2xl border border-rose-200 bg-rose-50 p-4 text-sm text-rose-700">{error}</div>

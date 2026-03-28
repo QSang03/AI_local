@@ -10,6 +10,8 @@ import {
   OmniInboxData,
   Project,
   ProjectChatThread,
+  ProjectTodoItem,
+  ProjectTodoListResponse,
   SaveMessageProjectMappingPayload,
   SaveChannelPayload,
   ZaloStartLoginResponse,
@@ -248,6 +250,7 @@ export async function getProjects(params?: { page?: number; pageSize?: number; q
         unreadCount: Number(typed.unreadCount ?? 0),
         summary: String(typed.quick_summary ?? typed.summary ?? ''),
         todoList: Array.isArray(typed.todoList) ? (typed.todoList as string[]) : [],
+        latestTodo: (typed.latest_todo as ProjectTodoListResponse | undefined),
       };
     });
 
@@ -436,22 +439,6 @@ export async function getProjectMessagesList(
   }
 }
 
-export interface ProjectTodoItem {
-  title: string;
-  description?: string;
-  status: 'todo' | 'in_progress' | 'done' | 'overdue' | string;
-  priority: 'low' | 'medium' | 'high' | string;
-}
-
-export interface ProjectTodoListResponse {
-  id: number;
-  project_id: number;
-  todo_date: string;
-  status: string;
-  items: ProjectTodoItem[];
-  created_at?: string;
-  updated_at?: string;
-}
 
 export async function getProjectTodoList(
   projectId: string | number,
@@ -820,23 +807,29 @@ export async function sendProjectChatMessage(payload: {
   return { ok: true, message: "Da gui tin nhan trong local mode." };
 }
 
-export async function getProjectAIOutput(projectId: string): Promise<{ summary: string; todoList: string[] }> {
+export async function getProjectAIOutput(projectId: string): Promise<{ summary: string; todoList?: string[]; latestTodo?: ProjectTodoListResponse }> {
   if (!USE_MOCK && API_BASE_URL) {
     // Try the newer `/summary` endpoint first (matches API spec),
     // fall back to legacy `/ai` path for compatibility.
     try {
       try {
         const data = await requestJson<Record<string, unknown>>(`/projects/${projectId}/summary`);
-        const summary = String(data.summary ?? data.content ?? "");
-        const todoList = Array.isArray(data.todoList) ? (data.todoList as string[]) : (Array.isArray(data.todo_list) ? (data.todo_list as string[]) : []);
-        return { summary, todoList };
+        const summary = String(data.quick_summary ?? data.summary ?? data.content ?? "");
+        const rawTodoList = data.todoList ?? data.todo_list;
+        const todoList = Array.isArray(rawTodoList) ? (rawTodoList as string[]) : undefined;
+        const latestTodo = (data.latestTodo ?? data.latest_todo) as ProjectTodoListResponse | undefined;
+        return { summary, todoList, latestTodo };
       } catch {
         // If `/summary` not found, try legacy `/ai` endpoint
-        const data2 = await requestJson<{ summary?: string; todoList?: string[] }>(`/projects/${projectId}/ai`);
-        return { summary: data2.summary ?? "", todoList: data2.todoList ?? [] };
+        const data2 = await requestJson<{ summary?: string; todoList?: string[]; latestTodo?: ProjectTodoListResponse }>(`/projects/${projectId}/ai`);
+        return { 
+          summary: data2.summary ?? "", 
+          todoList: Array.isArray(data2.todoList) ? data2.todoList : undefined, 
+          latestTodo: data2.latestTodo 
+        };
       }
     } catch {
-      return { summary: "", todoList: [] };
+      return { summary: "" };
     }
   }
 
@@ -847,7 +840,7 @@ export async function getProjectAIOutput(projectId: string): Promise<{ summary: 
     return { summary: p.summary, todoList: p.todoList ?? [] };
   }
 
-  return { summary: "", todoList: [] };
+  return { summary: "" };
 }
 
 export interface OmniInboxQuery {

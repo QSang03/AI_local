@@ -18,6 +18,24 @@ export interface Project {
   unreadCount: number;
   summary: string;
   todoList: string[];
+  latestTodo?: ProjectTodoListResponse;
+}
+
+export interface ProjectTodoItem {
+  title: string;
+  description?: string;
+  status: 'todo' | 'in_progress' | 'done' | 'overdue' | string;
+  priority: 'low' | 'medium' | 'high' | string;
+}
+
+export interface ProjectTodoListResponse {
+  id: number;
+  project_id: number;
+  todo_date: string;
+  status: string;
+  items: ProjectTodoItem[];
+  created_at?: string;
+  updated_at?: string;
 }
 
 export interface ChannelConfig {

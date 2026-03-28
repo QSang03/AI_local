@@ -1,9 +1,10 @@
-import React, { useState, useEffect } from "react";
-import { ExternalLink, FileText, Download, Loader2 } from "lucide-react";
+import React from "react";
+import ReactMarkdown from "react-markdown";
+import remarkGfm from "remark-gfm";
 import { formatDistanceToNow } from "date-fns";
 import { vi } from "date-fns/locale";
-import { apiClient } from "@/lib/api-client";
-import Image from "next/image";
+import { getAccessToken } from "@/lib/api-client";
+import { motion, AnimatePresence } from "framer-motion";
 
 interface MessageRendererProps {
   content: string;
@@ -11,317 +12,510 @@ interface MessageRendererProps {
   mediaUrls?: string[];
   isExpanded?: boolean;
   onToggleExpand?: () => void;
+  // New prop to inform parent if this message is purely media
+  onMediaOnlyChange?: (isMediaOnly: boolean) => void;
 }
 
+/**
+ * Helper function as guided by the user image
+ * SYNC: Updated to use NEXT_PUBLIC_API_BASE_URL or NEXT_PUBLIC_API_URL
+ */
 export function getFileUrl(fileId: string) {
+  if (!fileId) return "";
   const apiBase = process.env.NEXT_PUBLIC_API_BASE_URL || process.env.NEXT_PUBLIC_API_URL || "";
-  const base = apiBase.replace(/\/$/, "");
-  const path = base.endsWith('/api') ? `/files/${fileId}/view?redirect=true` : `/api/files/${fileId}/view?redirect=true`;
-  return `${base}${path}`;
+  const cleanedBase = apiBase.replace(/\/$/, "");
+  const filePath = cleanedBase.endsWith('/api') ? `/files/${fileId}/view?redirect=true` : `/api/files/${fileId}/view?redirect=true`;
+  return `${cleanedBase}${filePath}`;
 }
 
-function ResolvedMediaItem({ type, url: initialUrl, name }: { type: string, url?: string, name: string }) {
-  const [url, setUrl] = useState<string | undefined>(initialUrl);
-  const [loading, setLoading] = useState(!!initialUrl && initialUrl.startsWith("http"));
+/**
+ * Authenticated Download Helper
+ */
+async function downloadAuthenticatedFile(url: string, filename: string) {
+  try {
+    const token = getAccessToken();
+    const headers: Record<string, string> = {};
+    if (token) headers["Authorization"] = `Bearer ${token}`;
 
-  useEffect(() => {
-    let mounted = true;
-    if (!initialUrl || !initialUrl.startsWith("http")) {
-      return;
-    }
+    const response = await fetch(url, { headers });
+    if (!response.ok) throw new Error("Download failed");
 
-    // Nếu link là định dạng file nội bộ của backend OpenClaw
-    if (initialUrl.includes("/api/files/") && initialUrl.includes("/view")) {
-      // Force redirect=false để backend trả về JSON chứa link thay vì tự động 302 redirect
-      let fetchUrl = initialUrl;
-      if (fetchUrl.includes("redirect=")) {
-        fetchUrl = fetchUrl.replace(/redirect=(true|false)/, "redirect=false");
-      } else {
-        fetchUrl += fetchUrl.includes("?") ? "&redirect=false" : "?redirect=false";
+    const blob = await response.blob();
+    const blobUrl = URL.createObjectURL(blob);
+    
+    const link = document.createElement("a");
+    link.href = blobUrl;
+    link.download = filename;
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+    URL.revokeObjectURL(blobUrl);
+  } catch (err) {
+    console.error("Download error:", err);
+    window.open(url, "_blank"); // Fallback
+  }
+}
+
+/**
+ * ProtectedImage component that handles Authorization headers
+ */
+function ProtectedImage({ src, alt }: { src: string, alt?: string }) {
+  const [blobUrl, setBlobUrl] = React.useState<string | null>(null);
+  const [error, setError] = React.useState(false);
+  const [loading, setLoading] = React.useState(true);
+  const [isPreviewOpen, setIsPreviewOpen] = React.useState(false);
+
+  React.useEffect(() => {
+    if (!src) return;
+    
+    let isMounted = true;
+    const controller = new AbortController();
+    
+    const fetchWithAuth = async () => {
+      try {
+        const token = getAccessToken();
+        const headers: Record<string, string> = {};
+        if (token) headers["Authorization"] = `Bearer ${token}`;
+
+        const response = await fetch(src, { headers, signal: controller.signal });
+        if (!response.ok) throw new Error("Load failed");
+
+        const blob = await response.blob();
+        if (isMounted) {
+          const url = URL.createObjectURL(blob);
+          setBlobUrl(url);
+          setLoading(false);
+        }
+      } catch (err) {
+        if (isMounted) {
+          setError(true);
+          setLoading(false);
+        }
       }
-      
-      apiClient.get(fetchUrl)
-        .then(res => {
-          if (mounted && res.data && res.data.url) {
-            setUrl(res.data.url);
-          }
-        })
-        .catch(err => {
-          console.error("Failed to fetch secure file view:", err);
-        })
-        .finally(() => {
-          if (mounted) setLoading(false);
-        });
-    } else {
-      // Xử lý các link redirect ngoài khác (ex: zalo, bit.ly,...)
-      fetch(`/api/resolve-link?url=${encodeURIComponent(initialUrl)}`)
-        .then(res => res.json())
-        .then(data => {
-          if (mounted && data.url) {
-            setUrl(data.url);
-          }
-        })
-        .catch((err) => {
-          console.error("Failed to resolve link:", err);
-        })
-        .finally(() => {
-          if (mounted) setLoading(false);
-        });
-    }
+    };
 
-    return () => { mounted = false; };
-  }, [initialUrl]);
+    void fetchWithAuth();
 
-  if (loading) {
-    return (
-      <div className="flex items-center gap-3 p-3 w-full max-w-[240px] bg-slate-50 border border-slate-200 rounded-xl">
-        <Loader2 className="animate-spin text-slate-400" size={20} />
-        <span className="text-[13px] text-slate-500 font-medium truncate">Đang tải {type}...</span>
-      </div>
-    );
-  }
+    return () => {
+      isMounted = false;
+      controller.abort();
+      if (blobUrl) URL.revokeObjectURL(blobUrl);
+    };
+  }, [src]);
 
-  if (type === 'image' && url) {
-    return (
-      <a href={url} target="_blank" rel="noreferrer" className="block max-w-[240px] overflow-hidden rounded-xl border border-slate-200 hover:opacity-90 transition-opacity bg-slate-50 relative group">
-        <Image src={url} alt={name} className="w-full h-auto max-h-48 object-cover" width={240} height={192} unoptimized />
-        <div className="absolute inset-0 bg-black/40 opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center">
-          <ExternalLink className="text-white drop-shadow-md" size={24} />
-        </div>
-      </a>
-    );
-  }
-  
-  if (type === 'video' && url) {
-    return (
-      <div className="block max-w-[280px] overflow-hidden rounded-xl border border-slate-200 bg-black">
-        <video src={url} controls className="w-full max-h-48" preload="metadata" />
-      </div>
-    );
-  }
+  if (error) return <div className="text-[10px] text-slate-400 p-2 italic bg-slate-50 rounded-lg">{alt || "Lỗi tải ảnh"}</div>;
+  if (loading) return <div className="w-48 h-32 animate-pulse bg-slate-100 rounded-2xl" />;
 
-  // Render file or link (or fallback for image/video without visual support)
-  const isLink = type === 'link';
   return (
-    <a 
-      href={url} 
-      target={url ? "_blank" : undefined} 
-      rel="noreferrer" 
-      className="flex items-center gap-3 p-2 w-full max-w-[280px] bg-slate-50 border border-slate-200 hover:border-indigo-300 hover:bg-white hover:shadow-sm rounded-xl transition group"
-      title={name}
-    >
-      <div className="w-10 h-10 rounded-lg bg-indigo-100 flex items-center justify-center text-indigo-600 shrink-0">
-        {isLink ? <ExternalLink size={20} /> : <FileText size={20} />}
+    <>
+      <div className="block w-full max-w-full overflow-hidden my-0">
+        <button 
+          onClick={() => setIsPreviewOpen(true)}
+          className="block w-fit cursor-zoom-in hover:opacity-95 transition-opacity active:scale-[0.98]"
+        >
+          {/* eslint-disable-next-line @next/next/no-img-element */}
+          <img 
+            src={blobUrl || ""} 
+            alt={alt || ""} 
+            className="max-w-full h-auto max-h-[300px] object-contain rounded-2xl shadow-sm border border-slate-100" 
+          />
+        </button>
       </div>
-      <div className="flex-1 min-w-0">
-        <div className="text-[13px] font-semibold text-slate-800 truncate group-hover:text-indigo-600 transition-colors">
-          {name}
-        </div>
-        {url && (
-          <div className="text-[11px] font-medium text-slate-500 mt-0.5 flex items-center gap-1">
-            <span>{isLink ? 'Mở liên kết' : 'Tải xuống'}</span>
-            {isLink ? <ExternalLink size={12} /> : <Download size={12} />}
-          </div>
+
+      <AnimatePresence>
+        {isPreviewOpen && (
+          <motion.div 
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            className="fixed inset-0 z-[100] flex items-center justify-center p-4 bg-black/90 backdrop-blur-md cursor-zoom-out"
+            onClick={() => setIsPreviewOpen(false)}
+          >
+            <motion.button 
+              initial={{ scale: 0.9, opacity: 0 }}
+              animate={{ scale: 1, opacity: 1 }}
+              exit={{ scale: 0.9, opacity: 0 }}
+              className="relative max-w-full max-h-full"
+            >
+              <img 
+                src={blobUrl || ""} 
+                alt={alt || ""} 
+                className="max-w-full max-h-[90vh] object-contain rounded-lg shadow-2xl"
+              />
+              <div className="absolute top-4 right-4 text-white bg-black/50 hover:bg-black/80 p-2 rounded-full transition-colors">
+                <svg xmlns="http://www.w3.org/2000/svg" className="h-6 w-6" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+                </svg>
+              </div>
+            </motion.button>
+          </motion.div>
         )}
-      </div>
-    </a>
+      </AnimatePresence>
+    </>
   );
 }
 
-function sanitizeEmailHtml(rawHtml: string): string {
-  if (!rawHtml) return "";
-  try {
-    const parser = new DOMParser();
-    const doc = parser.parseFromString(rawHtml, "text/html");
+/**
+ * FilePreviewModal: Unified preview for PDF, MD, Audio, and Office summary
+ */
+function FilePreviewModal({ src, name, onClose }: { src: string, name: string, onClose: () => void }) {
+  const [content, setContent] = React.useState<string | null>(null);
+  const [blobUrl, setBlobUrl] = React.useState<string | null>(null);
+  const [loading, setLoading] = React.useState(true);
+  const ext = (name || "").split('.').pop()?.toLowerCase() || "";
+  const isMD = ext === 'md';
+  const isPDF = ext === 'pdf';
+  const isAudio = ['mp3', 'wav', 'm4a'].includes(ext);
+  const isOffice = ['docx', 'doc', 'xlsx', 'xls', 'csv'].includes(ext);
 
-    // Remove only script, meta, link, head, title (but keep <style> in <body>)
-    doc.querySelectorAll("script, meta, link, head, title").forEach(el => el.remove());
+  React.useEffect(() => {
+    let currentUrl: string | null = null;
+    const loadContent = async () => {
+      try {
+        const token = getAccessToken();
+        const headers: Record<string, string> = {};
+        if (token) headers["Authorization"] = `Bearer ${token}`;
 
-    // Remove event handlers, but KEEP style and class for original email CSS
-    doc.body.querySelectorAll("*").forEach(el => {
-      Array.from(el.attributes).forEach(attr => {
-        if (attr.name.startsWith('on')) el.removeAttribute(attr.name);
-      });
-    });
+        if (isMD) {
+          const response = await fetch(src, { headers });
+          const text = await response.text();
+          setContent(text);
+        } else if (isPDF || isAudio || isOffice) {
+          const response = await fetch(src, { headers });
+          const blob = await response.blob();
+          currentUrl = URL.createObjectURL(blob);
+          setBlobUrl(currentUrl);
+        }
+      } catch (err) {
+        console.error("Preview error:", err);
+      } finally {
+        setLoading(false);
+      }
+    };
+    void loadContent();
+    return () => {
+      if (currentUrl) URL.revokeObjectURL(currentUrl);
+    };
+  }, [src, isMD, isPDF, isAudio, isOffice]);
 
-    // Constrain images and tables so they cannot break the layout
-    doc.body.querySelectorAll('img').forEach(img => {
-      img.removeAttribute('width');
-      img.removeAttribute('height');
-      img.setAttribute('loading', 'lazy');
-      img.setAttribute('decoding', 'async');
-      // Add a small inline style so large email images won't overflow, but don't overwrite existing style
-      const prevStyle = img.getAttribute('style') || '';
-      img.setAttribute('style', prevStyle + ';max-width:100% !important; height:auto !important; display:block;');
-    });
-
-    doc.body.querySelectorAll('table').forEach(tbl => {
-      // Make tables scrollable instead of expanding the layout, but don't overwrite existing style
-      const prevStyle = tbl.getAttribute('style') || '';
-      tbl.setAttribute('style', prevStyle + ';max-width:100% !important; display:block; overflow-x:auto;');
-    });
-
-    // Prepend a small safe CSS to further enforce constraints, but allow original <style> to work
-    const safetyCss = `\n<style>
-      img{max-width:100% !important; height:auto !important; display:block;}
-      table{max-width:100% !important; display:block; overflow-x:auto;}
-      *{box-sizing:border-box; overflow-wrap:anywhere; word-break:break-word;}
-      pre,code{white-space:pre-wrap; overflow-wrap:anywhere; word-break:break-word;}
-    </style>\n`;
-
-    // Lấy inner body hoặc toàn bộ html nếu body empty
-    const bodyHtml = doc.body?.innerHTML?.trim() || doc.documentElement?.innerHTML?.trim() || "";
-    return safetyCss + bodyHtml;
-  } catch {
-    return "";
-  }
-}
-
-export function MessageRenderer({ content, bodyHtml, mediaUrls, isExpanded, onToggleExpand }: MessageRendererProps) {
-  // Email HTML content (priority over pure text)
-  if (bodyHtml && bodyHtml.trim()) {
-    const safeHtml = sanitizeEmailHtml(bodyHtml);
-    return (
-      <div
-        className="prose max-w-full text-sm text-slate-700 overflow-hidden break-words [overflow-wrap:anywhere] [&_*]:max-w-full"
-        dangerouslySetInnerHTML={{ __html: safeHtml }}
-      />
-    );
-  }
-
-  // Check if JSON
-  if (content.startsWith("{") && content.endsWith("}")) {
-    let parsed: Record<string, unknown> | null = null;
-    try {
-      parsed = JSON.parse(content);
-    } catch {
-      // JSON parse failed, fallback to plain text rendering
-    }
-
-    if (parsed) {
-      const title = String(parsed.title || parsed.text || parsed.message || "Tin nhắn đa phương tiện");
-      const attachment = String(parsed.attachment || parsed.data_url || "");
-      
-      return (
-        <div className="space-y-2">
-          <div className="text-sm text-slate-800 font-medium whitespace-pre-wrap break-words [overflow-wrap:anywhere]">
-            {title}
+  return (
+    <motion.div 
+      initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}
+      className="fixed inset-0 z-[110] flex items-center justify-center p-4 bg-black/60 backdrop-blur-sm"
+      onClick={onClose}
+    >
+      <motion.div 
+        initial={{ y: 20, scale: 0.95 }} animate={{ y: 0, scale: 1 }} exit={{ y: 20, scale: 0.95 }}
+        className={`bg-white w-full rounded-2xl shadow-2xl flex flex-col overflow-hidden ${isAudio ? 'max-w-md h-auto py-4' : 'max-w-4xl h-[85vh]'}`}
+        onClick={(e) => e.stopPropagation()}
+      >
+        <div className="p-4 border-b border-slate-100 flex items-center justify-between bg-slate-50/50">
+          <div className="flex items-center gap-3">
+            <h3 className="font-semibold text-slate-800 truncate max-w-md">{name}</h3>
           </div>
-          {attachment && (
-            <div className="mt-2 p-2 border border-slate-200 rounded-md bg-white text-xs text-sky-600 truncate flex items-center gap-1 max-w-[200px] overflow-hidden">
-              <ExternalLink size={14} className="shrink-0" />
-              <a href={attachment} target="_blank" rel="noreferrer" className="hover:underline truncate">
-                Đính kèm
-              </a>
+          <button onClick={onClose} className="p-2 hover:bg-slate-200 rounded-full transition-colors text-slate-500">
+            <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+          </button>
+        </div>
+        
+        <div className="flex-1 overflow-auto p-4 flex flex-col items-center justify-center bg-slate-50/20">
+          {loading ? (
+            <div className="h-full flex flex-col items-center justify-center gap-3 opacity-50 py-20">
+              <div className="w-8 h-8 border-2 border-indigo-500 border-t-transparent animate-spin rounded-full" />
+              <span className="text-sm font-medium">Đang nạp dữ liệu...</span>
             </div>
+          ) : isPDF && blobUrl ? (
+            <iframe src={`${blobUrl}#toolbar=0`} className="w-full h-full rounded shadow-sm border border-slate-200 bg-white" />
+          ) : isMD ? (
+            <div className="prose prose-sm max-w-full w-full bg-white p-6 rounded shadow-sm border border-slate-200">
+              <ReactMarkdown remarkPlugins={[remarkGfm]}>{content || ""}</ReactMarkdown>
+            </div>
+          ) : isAudio && blobUrl ? (
+            <div className="w-full px-4 text-center space-y-4">
+              <div className="w-20 h-20 bg-indigo-500 rounded-full flex items-center justify-center text-white mx-auto shadow-lg mb-6">
+                <svg xmlns="http://www.w3.org/2000/svg" className="h-10 w-10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M9 18V5l12-2v13"/><circle cx="6" cy="18" r="3"/><circle cx="18" cy="16" r="3"/></svg>
+              </div>
+              <audio src={blobUrl} controls autoPlay className="w-full" />
+              <button 
+                onClick={() => downloadAuthenticatedFile(src, name)}
+                className="bg-indigo-600 text-white px-6 py-2 rounded-full font-medium hover:bg-indigo-700 transition active:scale-95"
+              >
+                Tải về để xem lâu dài
+              </button>
+            </div>
+          ) : isOffice ? (
+            <div className="w-full h-full flex flex-col items-center justify-center text-center p-10 bg-white rounded-xl shadow-inner border border-slate-200/50">
+               <div className={`w-24 h-28 rounded-xl flex flex-col items-center justify-center text-white font-bold text-2xl uppercase shadow-xl mb-8 ${isOffice && (ext.includes('x') || ext.includes('xls')) ? 'bg-emerald-600' : 'bg-blue-600'}`}>
+                {ext.includes('x') || ext.includes('xls') ? 'X' : 'W'}
+              </div>
+              <h2 className="text-xl font-bold text-slate-900 mb-2">{name}</h2>
+              <p className="text-slate-500 max-w-md mb-8">
+                Tệp tin này hiện không thể xem trực tiếp hoàn toàn trong trình duyệt do yêu cầu xác thực bảo mật cao. 
+              </p>
+              <button 
+                onClick={() => downloadAuthenticatedFile(src, name)}
+                className="bg-blue-600 text-white px-8 py-3 rounded-full font-bold shadow-lg shadow-blue-200 hover:bg-blue-700 transition-all hover:-translate-y-0.5 active:translate-y-0 active:scale-95"
+              >
+                Tải xuống và Mở tệp tin
+              </button>
+            </div>
+          ) : (
+            <div className="text-slate-500 italic">Định dạng file không hỗ trợ xem trước.</div>
           )}
         </div>
-      );
-    }
-  }
+      </motion.div>
+    </motion.div>
+  );
+}
 
-  // URL
-  if (content.startsWith("http://") || content.startsWith("https://")) {
-    return (
-      <a href={content} target="_blank" rel="noreferrer" className="inline-flex max-w-full min-w-0 items-center gap-1 py-1 px-3 bg-white border border-slate-200 rounded-full text-sm text-sky-600 hover:bg-slate-50 transition shadow-sm">
-        <ExternalLink size={14} />
-        <span className="min-w-0 break-words [overflow-wrap:anywhere]">{content}</span>
-      </a>
+/**
+ * ShadowContent: Isolates Email CSS using Shadow DOM
+ */
+function ShadowContent({ html }: { html: string }) {
+  const containerRef = React.useRef<HTMLDivElement>(null);
+  
+  React.useEffect(() => {
+    if (containerRef.current) {
+      const container = containerRef.current;
+      container.innerHTML = "";
+      const shadowRoot = container.shadowRoot || container.attachShadow({ mode: "open" });
+      
+      const wrapper = document.createElement("div");
+      wrapper.className = "prose prose-sm max-w-full text-slate-700 leading-relaxed overflow-x-auto break-words";
+      wrapper.style.color = "#334155";
+      wrapper.style.fontFamily = "inherit";
+      wrapper.innerHTML = html;
+      
+      shadowRoot.innerHTML = "";
+      shadowRoot.appendChild(wrapper);
+    }
+  }, [html]);
+
+  return <div ref={containerRef} className="w-full overflow-hidden" />;
+}
+
+/**
+ * Modern FileCardRenderer: Visual parity with Image 17
+ */
+function FileCardRenderer({ src, name }: { src: string, name: string }) {
+  const [isPreviewOpen, setIsPreviewOpen] = React.useState(false);
+  
+  const cleanName = (name || "").replace(/^zalo-\d+-/gi, "");
+  const ext = cleanName.split('.').pop()?.toLowerCase() || "";
+  const isZippable = ['zip', 'rar', '7z'].includes(ext);
+  const isOffice = ['docx', 'doc', 'xlsx', 'xls', 'csv'].includes(ext);
+  // Only allow preview for formats that natively render well in our modal
+  const canPreview = ['pdf', 'md', 'mp3', 'wav', 'm4a'].includes(ext);
+  
+  let iconBg = "bg-slate-400";
+  let iconLabel = "FILE";
+  let iconSvg = null;
+
+  if (['xlsx', 'xls', 'csv'].includes(ext)) {
+    iconBg = "bg-emerald-600";
+    iconLabel = "X";
+  } else if (['docx', 'doc'].includes(ext)) {
+    iconBg = "bg-blue-600";
+    iconLabel = "W";
+  } else if (ext === 'pdf') {
+    iconBg = "bg-rose-500";
+    iconLabel = "PDF";
+  } else if (ext === 'md') {
+    iconBg = "bg-sky-500";
+    iconLabel = "MD";
+  } else if (['mp3', 'wav', 'm4a'].includes(ext)) {
+    iconBg = "bg-indigo-500";
+    iconLabel = "";
+    iconSvg = (
+      <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+        <path d="M9 18V5l12-2v13"/><circle cx="6" cy="18" r="3"/><circle cx="18" cy="16" r="3"/>
+      </svg>
+    );
+  } else if (isZippable) {
+    iconBg = "bg-purple-500";
+    iconLabel = "";
+    iconSvg = (
+      <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+        <path d="M10 2v20"/><path d="M14 2v20"/><path d="M15 4h-2"/><path d="M15 8h-2"/><path d="M15 12h-2"/><path d="M15 16h-2"/><path d="M15 20h-2"/><path d="M11 6h-2"/><path d="M11 10h-2"/><path d="M11 14h-2"/><path d="M11 18h-2"/>
+      </svg>
     );
   }
 
-  // Reaction
-  if (content === "[Cảm xúc]") {
-    return (
-      <span className="inline-flex items-center justify-center px-2 py-1 bg-amber-100 text-amber-700 rounded-full text-sm">
-        👍 Cảm xúc
-      </span>
-    );
-  }
+  const handleDownload = (e: React.MouseEvent) => {
+    e.preventDefault();
+    void downloadAuthenticatedFile(src, cleanName);
+  };
 
-  // Check for specialized [tag] lines (e.g. [image], [file], [link], [video])
-  const lines = content.trim().split('\n');
-  const parsedLines = lines.map(line => {
-    // Old format
-    const match = line.trim().match(/^\[(image|file|video|link)\]\s+(.+?)(?:\s+-\s+(https?:\/\/[^\s]+))?$/i);
-    if (match) {
-      return {
-        isTag: true,
-        type: match[1].toLowerCase(),
-        name: match[2].trim(),
-        url: match[3] || (match[2].startsWith('http') ? match[2].trim() : undefined),
-        original: line
-      };
-    }
+  return (
+    <>
+      <div className="flex items-center gap-3 p-3 bg-[#f0f5ff] border border-blue-50/50 rounded-xl w-full max-w-sm hover:bg-[#eaf1ff] transition-all group my-1 shadow-[0_1px_2px_rgba(0,0,0,0.02)]">
+        {/* File Icon */}
+        <div className={`w-10 h-11 ${iconBg} rounded-lg flex flex-col items-center justify-center text-white font-bold text-[10px] uppercase shadow-sm shrink-0`}>
+          {iconSvg || <span>{iconLabel}</span>}
+        </div>
+
+        {/* File Info */}
+        <div className="flex-1 min-w-0 flex flex-col gap-0.5">
+          <div className="text-sm font-semibold text-slate-900 truncate pr-2" title={cleanName}>
+            {cleanName || "Tên tệp tin"}
+          </div>
+          <div className="text-[11px] text-blue-600 font-medium flex items-center gap-2">
+            <span>{/* Placeholder size */} 46.2 KB</span>
+            <span className="flex items-center gap-1 opacity-80">
+              <svg xmlns="http://www.w3.org/2000/svg" className="h-3 w-3" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>
+              Tải về để xem lâu dài
+            </span>
+          </div>
+        </div>
+
+        {/* Action Buttons */}
+        <div className="flex items-center gap-1 shrink-0">
+          {canPreview && (
+            <button 
+              onClick={() => setIsPreviewOpen(true)}
+              className="w-8 h-8 rounded-full flex items-center justify-center text-slate-400 hover:bg-white hover:text-indigo-600 hover:shadow-sm transition-all active:scale-95"
+              title="Xem trước"
+            >
+              <svg xmlns="http://www.w3.org/2000/svg" className="h-4.5 w-4.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                <path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/>
+              </svg>
+            </button>
+          )}
+          <button 
+            onClick={handleDownload}
+            className="w-8 h-8 rounded-full flex items-center justify-center text-slate-400 hover:bg-white hover:text-blue-600 hover:shadow-sm transition-all active:scale-95"
+            title="Tải xuống"
+          >
+            <svg xmlns="http://www.w3.org/2000/svg" className="h-4.5 w-4.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+              <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/>
+            </svg>
+          </button>
+        </div>
+      </div>
+
+      <AnimatePresence>
+        {isPreviewOpen && <FilePreviewModal src={src} name={cleanName} onClose={() => setIsPreviewOpen(false)} />}
+      </AnimatePresence>
+    </>
+  );
+}
+
+const tagRegexGlobal = /\[(file|image|video|audio):([^:\]]+)(?::([^\]]+))?\]/gi;
+
+export function MessageRenderer({ content, bodyHtml, mediaUrls, isExpanded, onToggleExpand, onMediaOnlyChange }: MessageRendererProps) {
+  // 1. Email HTML content with Attachment Scan & CSS Isolation
+  if (bodyHtml && bodyHtml.trim()) {
+    // eslint-disable-next-line react-hooks/rules-of-hooks
+    React.useEffect(() => { onMediaOnlyChange?.(false); }, [onMediaOnlyChange]);
     
-    // New format: [file:id:name]
-    const newMatch = line.trim().match(/^\[(file|image|video|link):([^:]+):(.+)\]$/i);
-    if (newMatch) {
-      let type = newMatch[1].toLowerCase();
-      const fileId = newMatch[2];
-      const name = newMatch[3];
-      
-      if (type === 'file') {
-        if (/\.(jpg|jpeg|png|gif|webp)$/i.test(name)) type = 'image';
-        else if (/\.(mp4|webm|ogg|mov)$/i.test(name)) type = 'video';
+    let html = bodyHtml;
+
+    // FIX v19: Pre-process the HTML to cleanly replace <img ... [tag] ... > with a Placeholder
+    const placeholderRegex = /<img\s+[^>]*?\[(file|image|video|audio):([^:\]]+)(?::([^\]]+))?\][^>]*?>/gi;
+    html = html.replace(placeholderRegex, (match, type, id, name) => {
+      return `__MEDIA_TAG__${type}!!${id}!!${name || "Media"}__`;
+    });
+
+    // Also catch any tags NOT inside an <img> tag
+    html = html.replace(tagRegexGlobal, (match, type, id, name) => {
+      if (match.startsWith('__MEDIA_TAG__')) return match;
+      return `__MEDIA_TAG__${type}!!${id}!!${name || "Media"}__`;
+    });
+
+    const segments = html.split(/(__MEDIA_TAG__.*?__)/g);
+    const parts: React.ReactNode[] = [];
+
+    segments.forEach((seg, idx) => {
+      if (seg.startsWith('__MEDIA_TAG__')) {
+        const payload = seg.replace('__MEDIA_TAG__', '').replace('__', '');
+        const [type, id, name] = payload.split('!!');
+        const url = getFileUrl(id);
+        const isVisual = type === 'image' || type === 'video' || /\.(jpg|jpeg|png|gif|webp|bmp)(?:@|\?|$)/i.test(name || '');
+        
+        if (isVisual) {
+          parts.push(<ProtectedImage key={`media-${idx}`} src={url} alt={name} />);
+        } else {
+          parts.push(<FileCardRenderer key={`media-${idx}`} src={url} name={name || "Tập tin"} />);
+        }
+      } else if (seg.trim().length > 0) {
+        parts.push(<ShadowContent key={`shadow-${idx}`} html={seg} />);
       }
-      
-      return {
-        isTag: true,
-        type,
-        name,
-        url: getFileUrl(fileId),
-        original: line
-      };
-    }
+    });
 
-    return { isTag: false, text: line };
-  });
-
-  const hasTags = parsedLines.some(p => p.isTag);
-
-  if (hasTags) {
     return (
-      <div className="space-y-2 flex flex-col items-start min-w-0 max-w-full">
-        {parsedLines.map((p, i) => {
-          if (!p.isTag) {
-            return (
-              <div key={i} className="text-sm text-slate-700 whitespace-pre-wrap break-words [overflow-wrap:anywhere] leading-relaxed">
-                {p.text}
-              </div>
-            );
-          }
-
-          return <ResolvedMediaItem key={i} type={p.type!} url={p.url} name={p.name!} />;
-        })}
+      <div className="flex flex-col gap-2 w-full max-w-full overflow-hidden break-words text-slate-800">
+        {parts.length > 0 ? parts : (
+          <ShadowContent html={bodyHtml} />
+        )}
       </div>
     );
   }
 
-  // Plain Text
-  const isLong = content.length > 300 || lines.length > 4;
-  const displayContent = (!isExpanded && isLong) ? content.slice(0, 300) + "..." : content;
+  // 2. ONE-STOP PARSING LOGIC for regular messages
+  const unifiedMedia: { idOrUrl: string, name: string, type: string, isFromTag: boolean }[] = [];
+  const currentContent = (content || "").trim();
+  let cleanText = currentContent;
+  
+  let match;
+  tagRegexGlobal.lastIndex = 0;
+  while ((match = tagRegexGlobal.exec(currentContent)) !== null) {
+    const [fullTag, type, id, name] = match;
+    unifiedMedia.push({ idOrUrl: id, name: name || "Media", type, isFromTag: true });
+    cleanText = cleanText.replace(fullTag, "").trim();
+  }
+
+  if (unifiedMedia.length === 0 && mediaUrls && mediaUrls.length > 0) {
+    mediaUrls.forEach((url, i) => {
+      const isImg = /\.(jpg|jpeg|png|gif|webp|bmp)$/i.test(url) || url.includes('image');
+      unifiedMedia.push({ idOrUrl: url, name: `File #${i+1}`, type: isImg ? 'image' : 'file', isFromTag: false });
+    });
+  }
+
+  const isMediaOnly = cleanText.trim().length === 0 && unifiedMedia.length > 0;
+  
+  // eslint-disable-next-line react-hooks/rules-of-hooks
+  const lastEmittedValue = React.useRef<boolean | null>(null);
+  // eslint-disable-next-line react-hooks/rules-of-hooks
+  React.useEffect(() => {
+    if (lastEmittedValue.current !== isMediaOnly) {
+      onMediaOnlyChange?.(isMediaOnly);
+      lastEmittedValue.current = isMediaOnly;
+    }
+  }, [isMediaOnly, onMediaOnlyChange]);
+
+  const isLong = cleanText.length > 1000;
+  const displayText = (!isExpanded && isLong) ? cleanText.slice(0, 1000) + "..." : cleanText;
 
   return (
-    <div className="space-y-1 min-w-0 max-w-full">
-      {displayContent && (
-        <div className="text-sm text-slate-700 whitespace-pre-wrap break-words [overflow-wrap:anywhere] leading-relaxed">
-          {displayContent}
+    <div className="flex flex-col gap-1 w-full min-w-0 max-w-full overflow-hidden break-words">
+      {displayText && displayText.trim().length > 0 && (
+        <div className="prose prose-sm max-w-full text-slate-800 leading-normal break-words overflow-x-auto">
+          <ReactMarkdown remarkPlugins={[remarkGfm]}>
+            {displayText}
+          </ReactMarkdown>
         </div>
       )}
+      
       {isLong && onToggleExpand && (
-        <button
-          onClick={onToggleExpand}
-          className="text-xs font-medium text-indigo-600 hover:text-indigo-700 hover:underline"
+        <button 
+          onClick={onToggleExpand} 
+          className="text-[11px] font-bold text-indigo-600 hover:underline self-start mt-1"
         >
           {isExpanded ? "Thu gọn" : "Xem thêm"}
         </button>
       )}
-      {mediaUrls && mediaUrls.length > 0 && !hasTags && (
-        <div className="mt-2 space-y-2 flex flex-col items-start min-w-0 max-w-full">
-          {mediaUrls.map((url, i) => (
-            <ResolvedMediaItem key={i} type="image" url={url} name={`Image ${i + 1}`} />
-          ))}
+
+      {unifiedMedia.length > 0 && (
+        <div className={`${cleanText.trim().length > 0 ? 'mt-0' : ''} space-y-0.5 flex flex-col items-start w-full`}>
+          {unifiedMedia.map((item, i) => {
+            const finalUrl = getFileUrl(item.idOrUrl);
+            const isVisual = item.type === 'image' || item.type === 'video' || /\.(jpg|jpeg|png|gif|webp|bmp)(?:@|\?|$)/i.test(item.name || '');
+            
+            if (isVisual) {
+              return <ProtectedImage key={`media-${i}`} src={finalUrl} alt={item.name} />;
+            }
+            return <FileCardRenderer key={`media-${i}`} src={finalUrl} name={item.name} />;
+          })}
         </div>
       )}
     </div>

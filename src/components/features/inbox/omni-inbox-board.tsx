@@ -1,18 +1,35 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import Image from "next/image";
-import { AnimatePresence, motion } from "framer-motion";
-import { formatDistanceToNow } from "date-fns";
-import { vi } from "date-fns/locale";
-import { Search, Mail, Phone, MessageCircle, X, Ban, User, MoreVertical, ChevronRight } from "lucide-react";
-import { getInboxConversations, getInboxMessages, ignoreConversation, saveMessageProjectMapping } from "@/lib/api";
-import { InboxConversationSummary, MessageChannel, PlatformMessage, Project } from "@/types/domain";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { AnimatePresence } from "framer-motion";
+import { 
+  getInboxConversations, 
+  getInboxMessages, 
+  ignoreConversation, 
+  saveMessageProjectMapping 
+} from "@/lib/api";
+import { 
+  InboxConversationSummary, 
+  MessageChannel, 
+  PlatformMessage, 
+  Project 
+} from "@/types/domain";
 
 import Toast from "@/components/ui/Toast";
 import { MessageRenderer } from "./components/MessageRenderer";
 import { MappingPanel } from "./components/MappingPanel";
 import { useMessageSelection } from "./hooks/useMessageSelection";
+
+// New Components
+import { ConversationItem } from "./components/ConversationItem";
+import { ChannelTabs } from "./components/ChannelTabs";
+import { FilterBar } from "./components/FilterBar";
+import { ChatHeader } from "./components/ChatHeader";
+import { DetailsPanel } from "./components/DetailsPanel";
+import { EmptyState } from "./components/EmptyState";
+import { ConversationListSkeleton, MessageSkeleton } from "./components/SkeletonLoader";
+import { BulkActionBar } from "./components/BulkActionBar";
+import { AlertBanner } from "./components/AlertBanner";
 
 type ChannelFilter = "all" | MessageChannel;
 
@@ -25,29 +42,12 @@ interface OmniInboxBoardProps {
 
 const PAGE_SIZE = 20;
 
-const CHANNEL_COLORS = {
-  zalo: { bg: "bg-emerald-100", text: "text-emerald-700", label: "ZALO", icon: MessageCircle },
-  email: { bg: "bg-amber-100", text: "text-amber-700", label: "EMAIL", icon: Mail },
-  whatsapp: { bg: "bg-green-100", text: "text-green-700", label: "WA", icon: Phone },
-} as const;
-
 const INBOX_VIEW_STATE_KEY = "omniInboxViewState";
 
 type InboxViewState = {
   channelFilter: ChannelFilter;
   selectedByChannel: Partial<Record<Exclude<ChannelFilter, "all">, string>>;
 };
-
-
-function timeAgo(dateStr: string) {
-  try {
-    const d = new Date(dateStr);
-    if (isNaN(d.getTime())) return dateStr;
-    return formatDistanceToNow(d, { addSuffix: true, locale: vi });
-  } catch {
-    return dateStr;
-  }
-}
 
 export function OmniInboxBoard({
   projects,
@@ -79,6 +79,7 @@ export function OmniInboxBoard({
   const [ignoredConversations, setIgnoredConversations] = useState<Set<string>>(new Set());
   const [selectedConversationId, setSelectedConversationId] = useState<string | null>(initialSelectedConversationId ?? null);
   const [isMappingOpen, setIsMappingOpen] = useState(false);
+  const [isDetailsOpen, setIsDetailsOpen] = useState(false);
   const [saving, setSaving] = useState(false);
   const [toastMessage, setToastMessage] = useState<string | null>(null);
   const [localProjects, setLocalProjects] = useState<Project[]>(projects ?? []);
@@ -86,6 +87,23 @@ export function OmniInboxBoard({
   const [persistedSelectionByChannel, setPersistedSelectionByChannel] = useState<InboxViewState["selectedByChannel"]>(
     persistedState?.selectedByChannel ?? {},
   );
+
+  const [mediaOnlyMsgs, setMediaOnlyMsgs] = useState<Set<string>>(new Set());
+
+  // FIX v13: Stabilize callback and prevent unnecessary state updates that cause infinite loops
+  const handleMediaOnlyChange = useCallback((msgId: string, isMedia: boolean) => {
+    setMediaOnlyMsgs(prev => {
+      // Comparison check: If set state already matches incoming value, skip update to avoid loop
+      const alreadyHas = prev.has(msgId);
+      if (isMedia === alreadyHas) return prev;
+      
+      const next = new Set(prev);
+      if (isMedia) next.add(msgId);
+      else next.delete(msgId);
+      return next;
+    });
+  }, []);
+
   const projectNameById = useMemo(
     () =>
       new Map(
@@ -117,12 +135,15 @@ export function OmniInboxBoard({
   const convoListRef = useRef<HTMLDivElement | null>(null);
   const convoSentinelRef = useRef<HTMLDivElement | null>(null);
   const messageListRef = useRef<HTMLDivElement | null>(null);
-  const shouldAutoScrollToLatestRef = useRef(false);
-  const prependScrollAnchorRef = useRef<{ conversationId: string; prevHeight: number; prevTop: number } | null>(null);
+  const loadMoreOldestSentinelRef = useRef<HTMLDivElement | null>(null);
+  const lastLoadTimeRef = useRef<number>(0);
+
+  const prevScrollHeightRef = useRef<number>(0);
+  const isAppendingRef = useRef<boolean>(false);
+  
   const conversationFetchesRef = useRef<Set<string>>(new Set());
   const messageFetchesRef = useRef<Set<string>>(new Set());
   const initializedProviderRef = useRef<string | undefined>(undefined);
-  const usedInitialSeedRef = useRef(false);
 
   useEffect(() => {
     if (conversations.length > 0) {
@@ -201,28 +222,29 @@ export function OmniInboxBoard({
 
   const loadConversationMessages = useCallback(
     async (conversationId: string, appendOlder: boolean) => {
+      const now = Date.now();
+      if (appendOlder && now - lastLoadTimeRef.current < 1500) return; // Prevent loop
+      
       const meta = messageMetaByConversation[conversationId] ?? { offset: 0, hasMore: true, loading: false };
       if (meta.loading) return;
       if (appendOlder && !meta.hasMore) return;
+      
       const offset = appendOlder ? meta.offset : 0;
       const key = `${providerParam ?? "all"}:${conversationId}:${offset}:${appendOlder ? "append" : "replace"}`;
       if (messageFetchesRef.current.has(key)) return;
       messageFetchesRef.current.add(key);
+
+      if (appendOlder && messageListRef.current) {
+        // Precise capture before state update
+        prevScrollHeightRef.current = messageListRef.current.scrollHeight;
+        isAppendingRef.current = true;
+      }
 
       setMessageMetaByConversation((prev) => ({
         ...prev,
         [conversationId]: { ...(prev[conversationId] ?? { offset: 0, hasMore: true }), loading: true },
       }));
       setMessagesLoading(true);
-
-      const list = messageListRef.current;
-      if (appendOlder && list) {
-        prependScrollAnchorRef.current = {
-          conversationId,
-          prevHeight: list.scrollHeight,
-          prevTop: list.scrollTop,
-        };
-      }
 
       try {
         const data = await getInboxMessages({
@@ -243,35 +265,37 @@ export function OmniInboxBoard({
         });
 
         const nextOffset = offset + data.items.length;
-        // Do not trust `total` blindly; some providers return inconsistent totals.
-        // Continue paging while we still receive a full page.
         const hasMore = data.items.length === PAGE_SIZE;
         setMessageMetaByConversation((prev) => ({
           ...prev,
           [conversationId]: { offset: nextOffset, hasMore, loading: false },
         }));
+        if (appendOlder) lastLoadTimeRef.current = Date.now();
       } finally {
         setMessagesLoading(false);
-        setMessageMetaByConversation((prev) => ({
-          ...prev,
-          [conversationId]: {
-            ...(prev[conversationId] ?? { offset: 0, hasMore: true }),
-            loading: false,
-          },
-        }));
       }
     },
     [messageMetaByConversation, providerParam],
   );
 
-  useEffect(() => {
-    if (!usedInitialSeedRef.current && providerParam === "email" && (initialConversations?.length ?? 0) > 0) {
-      usedInitialSeedRef.current = true;
-      initializedProviderRef.current = providerParam;
-      return;
+  useLayoutEffect(() => {
+    if (isAppendingRef.current && messageListRef.current) {
+      const container = messageListRef.current;
+      const heightDiff = container.scrollHeight - prevScrollHeightRef.current;
+      if (heightDiff > 0) {
+        // Force manual anchoring for flex-col-reverse because native anchoring
+        // sometimes jumps in React's async rendering cycles.
+        container.scrollTop += heightDiff;
+      }
+      isAppendingRef.current = false;
     }
+  }, [messagesByConversation]);
+
+  useEffect(() => {
     if (initializedProviderRef.current === providerParam) return;
     initializedProviderRef.current = providerParam;
+    
+    // THOROUGH RESET on tab change - Always load fresh
     conversationFetchesRef.current.clear();
     messageFetchesRef.current.clear();
     setConversationOffset(0);
@@ -280,8 +304,10 @@ export function OmniInboxBoard({
     setSelectedConversationId(null);
     setMessagesByConversation({});
     setMessageMetaByConversation({});
+    setMediaOnlyMsgs(new Set());
+    
     void loadConversationsPage(0, false);
-  }, [providerParam, loadConversationsPage, initialConversations?.length]);
+  }, [providerParam, loadConversationsPage]);
 
   useEffect(() => {
     if (conversations.length === 0) return;
@@ -309,40 +335,6 @@ export function OmniInboxBoard({
   }, [selectedConversationId, messagesByConversation, loadConversationMessages]);
 
   useEffect(() => {
-    if (!selectedConversationId) return;
-    shouldAutoScrollToLatestRef.current = true;
-  }, [selectedConversationId]);
-
-  useEffect(() => {
-    if (!selectedConversationId) return;
-    if (!shouldAutoScrollToLatestRef.current) return;
-    const list = messageListRef.current;
-    if (!list) return;
-    const messageCount = messagesByConversation[selectedConversationId]?.length ?? 0;
-    if (messageCount <= 0) return;
-
-    requestAnimationFrame(() => {
-      list.scrollTo({ top: list.scrollHeight, behavior: "auto" });
-    });
-    shouldAutoScrollToLatestRef.current = false;
-  }, [selectedConversationId, messagesByConversation]);
-
-  useEffect(() => {
-    const anchor = prependScrollAnchorRef.current;
-    if (!anchor) return;
-    if (anchor.conversationId !== selectedConversationId) {
-      prependScrollAnchorRef.current = null;
-      return;
-    }
-    const list = messageListRef.current;
-    if (!list) return;
-    const nextHeight = list.scrollHeight;
-    if (nextHeight <= anchor.prevHeight) return;
-    list.scrollTop = anchor.prevTop + (nextHeight - anchor.prevHeight);
-    prependScrollAnchorRef.current = null;
-  }, [selectedConversationId, messagesByConversation]);
-
-  useEffect(() => {
     const root = convoListRef.current;
     const sentinel = convoSentinelRef.current;
     if (!root || !sentinel) return;
@@ -361,6 +353,28 @@ export function OmniInboxBoard({
     obs.observe(sentinel);
     return () => obs.disconnect();
   }, [conversationHasMore, conversationOffset, remoteLoading, loadConversationsPage]);
+
+  useEffect(() => {
+    const scrollContainer = messageListRef.current;
+    const sentinel = loadMoreOldestSentinelRef.current;
+    if (!scrollContainer || !sentinel || !selectedConversationId) return;
+
+    const observer = new IntersectionObserver(
+      (entries) => {
+        const entry = entries[0];
+        if (entry.isIntersecting && !messagesLoading) {
+          const meta = messageMetaByConversation[selectedConversationId];
+          if (meta && meta.hasMore && !meta.loading) {
+            void loadConversationMessages(selectedConversationId, true);
+          }
+        }
+      },
+      { root: scrollContainer, rootMargin: "0px", threshold: 0.1 }
+    );
+
+    observer.observe(sentinel);
+    return () => observer.disconnect();
+  }, [selectedConversationId, messagesLoading, messageMetaByConversation, loadConversationMessages]);
 
   const filteredConversations = useMemo(() => {
     return conversations.filter((c) => {
@@ -388,21 +402,11 @@ export function OmniInboxBoard({
     [selectedConversationId, messagesByConversation],
   );
 
-  const handleMessageListScroll = useCallback(() => {
-    const root = messageListRef.current;
-    if (!root || !selectedConversationId) return;
-    if (root.scrollTop > 48) return;
-    const meta = messageMetaByConversation[selectedConversationId];
-    if (!meta || meta.loading || !meta.hasMore) return;
-    void loadConversationMessages(selectedConversationId, true);
-  }, [selectedConversationId, messageMetaByConversation, loadConversationMessages]);
-
   const handleSelectConversation = (id: string) => {
     if (id === selectedConversationId) return;
     if (channelFilter !== "all") {
       persistInboxViewState(channelFilter, { [channelFilter]: id });
     }
-    shouldAutoScrollToLatestRef.current = true;
     setSelectedConversationId(id);
     clearAll();
     setIsMappingOpen(false);
@@ -428,337 +432,288 @@ export function OmniInboxBoard({
     setSaving(false);
   };
 
+  const handleToggleIgnore = async () => {
+    if (!selectedConversation) return;
+    const current = ignoredConversations.has(selectedConversation.id);
+    const nextState = !current;
+    setIgnoredConversations((prev) => {
+      const next = new Set(prev);
+      if (nextState) next.add(selectedConversation.id);
+      else next.delete(selectedConversation.id);
+      return next;
+    });
+    const res = await ignoreConversation(selectedConversation.id, nextState);
+    if (!res.ok) {
+      setToastMessage(res.message);
+      setIgnoredConversations((prev) => {
+        const next = new Set(prev);
+        if (current) next.add(selectedConversation.id);
+        else next.delete(selectedConversation.id);
+        return next;
+      });
+    }
+  };
+
+  const unreadCounts = useMemo(() => {
+    return {
+      email: conversations.filter(c => c.provider === 'email').length,
+      zalo: conversations.filter(c => c.provider === 'zalo_personal').length,
+      whatsapp: conversations.filter(c => c.provider === 'whatsapp_personal').length,
+    };
+  }, [conversations]);
+
+  const hasMoreMessages = useMemo(() => {
+    if (!selectedConversationId) return false;
+    return messageMetaByConversation[selectedConversationId]?.hasMore ?? false;
+  }, [selectedConversationId, messageMetaByConversation]);
+
   return (
-    <div className="flex flex-col h-full bg-slate-50 relative overflow-hidden font-sans rounded-2xl shadow-sm border border-slate-200">
-      <header className="bg-white border-b border-slate-200 px-6 py-4 shrink-0 shadow-sm z-10 relative">
-        <h1 className="text-2xl font-bold text-slate-900 tracking-tight">Unified Inbox & Mapping</h1>
-      </header>
+    <div className="flex h-full bg-white overflow-hidden shadow-2xl border-l border-slate-200">
+      <aside className="w-[320px] bg-white border-r border-slate-200 flex flex-col shrink-0 h-full relative z-20 shadow-[4px_0_24px_rgba(0,0,0,0.02)]">
+        <ChannelTabs 
+          active={channelFilter} 
+          counts={unreadCounts} 
+          onChange={(ch) => {
+            persistInboxViewState(ch);
+            setChannelFilter(ch);
+          }} 
+        />
+        
+        <FilterBar 
+          searchQuery={searchQuery}
+          onSearchChange={setSearchQuery}
+          hideBlacklisted={hideBlacklisted}
+          onHideBlacklistedChange={setHideBlacklisted}
+          totalCount={filteredConversations.length}
+        />
 
-      <div className="bg-white border-b border-slate-200 px-6 py-3 flex items-center justify-between shrink-0 sticky top-0 z-10">
-        <div className="flex bg-slate-100 p-1 rounded-lg border border-slate-200">
-          {(["email", "zalo", "whatsapp"] as const).map((ch) => {
-            const active = channelFilter === ch;
-            const ChIcon = CHANNEL_COLORS[ch].icon;
-            return (
-              <button
-                key={ch}
-                onClick={() => {
-                  persistInboxViewState(ch);
-                  setChannelFilter(ch);
-                }}
-                className={`flex items-center gap-1.5 px-3 py-1.5 rounded-md text-sm font-medium transition-all ${
-                  active ? "bg-indigo-500 text-white shadow-sm" : "text-slate-600 hover:bg-slate-200"
-                }`}
-              >
-                <ChIcon size={14} className={active ? "text-white" : "text-slate-500"} />
-                {ch.charAt(0).toUpperCase() + ch.slice(1)}
-              </button>
-            );
-          })}
-        </div>
-
-        <div className="relative flex-1 max-w-md mx-6">
-          <Search className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" size={16} />
-          <input
-            value={searchQuery}
-            onChange={(e) => setSearchQuery(e.target.value)}
-            placeholder="Tìm hội thoại..."
-            className="w-full pl-9 pr-8 py-2 bg-slate-50 border border-slate-200 rounded-full text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:bg-white transition"
-          />
-          {searchQuery ? (
-            <button onClick={() => setSearchQuery("")} className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-400">
-              <X size={14} />
-            </button>
-          ) : null}
-        </div>
-
-        <label className="flex items-center gap-2 cursor-pointer">
-          <input type="checkbox" className="sr-only" checked={hideBlacklisted} onChange={(e) => setHideBlacklisted(e.target.checked)} />
-          <span className="text-sm font-medium text-slate-700 flex items-center gap-1">
-            <Ban size={14} className={hideBlacklisted ? "text-rose-500" : "text-slate-400"} /> Ẩn blacklist
-          </span>
-        </label>
-      </div>
-
-      <div className="flex flex-1 overflow-hidden relative min-w-0">
-        <div className="w-[320px] bg-white border-r border-slate-200 flex flex-col shrink-0 h-full">
-          <div className="p-3 border-b border-slate-100">
-            <h2 className="text-sm font-semibold text-slate-800">Hội thoại ({filteredConversations.length})</h2>
-          </div>
-          <div ref={convoListRef} className="flex-1 overflow-y-auto p-2 space-y-1 bg-slate-50/50 relative [scrollbar-gutter:stable]">
-            {filteredConversations.map((c) => {
-              const isSelected = selectedConversation?.id === c.id;
-              const loadedCount = (messagesByConversation[c.id] ?? []).length;
-              const channel: MessageChannel =
-                channelFilter === "all"
-                  ? "email"
-                  : channelFilter;
-              const cConf = CHANNEL_COLORS[channel] || CHANNEL_COLORS.email;
-              return (
-                <button
-                  key={c.id}
-                  onClick={() => handleSelectConversation(c.id)}
-                  className={`block w-full min-h-[78px] text-left p-3 rounded-lg border transition ${
-                    isSelected ? "bg-indigo-50 border-indigo-400 border-l-[3px]" : "bg-white border-slate-200 hover:border-slate-300"
-                  }`}
-                >
-                  <div className="flex justify-between gap-2">
-                    <p className="text-[13px] font-semibold truncate">{c.name || c.id}</p>
-                    <div className="flex items-center gap-1.5 shrink-0">
-                      <span className="inline-flex h-5 min-w-5 items-center justify-center rounded-full bg-slate-200 px-1.5 text-[10px] font-semibold text-slate-700">
-                        {loadedCount}
-                      </span>
-                      <span className={`px-1 py-[1px] rounded text-[9px] border ${cConf.bg} ${cConf.text}`}>{cConf.label}</span>
-                    </div>
-                  </div>
-                  <p className="text-[11px] text-slate-500 mt-1">{timeAgo(c.lastMessageAt ?? c.updatedAt ?? c.createdAt ?? "")}</p>
-                </button>
-              );
-            })}
-            <div ref={convoSentinelRef} className="w-full h-2" />
-            {remoteLoading ? <p className="text-xs text-slate-500 py-2 text-center">Đang tải thêm hội thoại...</p> : null}
-          </div>
-        </div>
-
-        <div className="flex-1 bg-white relative flex flex-col min-w-0 h-full overflow-x-hidden">
-          {!selectedConversation ? (
-            <div className="flex-1 flex flex-col items-center justify-center text-slate-400">
-              <Mail size={28} className="text-slate-300" />
-              <p className="text-sm mt-2">Vui lòng chọn hội thoại</p>
-            </div>
+        <div ref={convoListRef} className="flex-1 overflow-y-auto bg-white custom-scrollbar">
+          {remoteLoading && conversations.length === 0 ? (
+            <ConversationListSkeleton />
           ) : (
-            <>
-              <div className="px-6 py-4 border-b border-slate-200 shrink-0 bg-white sticky top-0 z-10 min-w-0">
-                <div className="flex justify-between items-start gap-4">
-                  <div className="min-w-0">
-                    <h2 className="text-lg font-bold text-slate-900 truncate">{selectedConversation.name || selectedConversation.id}</h2>
-                    <div className="flex gap-4 mt-2">
-                      <button onClick={() => selectAll(selectedConversationMessages.map((m) => m.id))} className="text-[13px] font-medium text-indigo-600 hover:underline">Chọn tất cả</button>
-                      <button onClick={clearAll} className="text-[13px] font-medium text-slate-500 hover:text-slate-800">Bỏ chọn</button>
-                    </div>
-                  </div>
-                  <div className="flex items-center gap-2 shrink-0">
-                    <button
-                      onClick={async () => {
-                        const current = ignoredConversations.has(selectedConversation.id);
-                        const nextState = !current;
-                        setIgnoredConversations((prev) => {
-                          const next = new Set(prev);
-                          if (nextState) next.add(selectedConversation.id);
-                          else next.delete(selectedConversation.id);
-                          return next;
-                        });
-                        const res = await ignoreConversation(selectedConversation.id, nextState);
-                        if (!res.ok) {
-                          setToastMessage(res.message);
-                          // Revert if failed
-                          setIgnoredConversations((prev) => {
-                            const next = new Set(prev);
-                            if (current) next.add(selectedConversation.id);
-                            else next.delete(selectedConversation.id);
-                            return next;
-                          });
-                        }
-                      }}
-                      className={`p-2 rounded-lg border transition-colors ${
-                        ignoredConversations.has(selectedConversation.id)
-                          ? "border-rose-200 text-rose-600 bg-rose-50"
-                          : "border-slate-200 text-slate-400 hover:text-rose-600 hover:bg-rose-50"
-                      }`}
-                    >
-                      <Ban size={16} />
-                    </button>
-                    <button className="p-2 rounded-lg border border-slate-200 text-slate-400"><User size={16} /></button>
-                    <button className="p-2 rounded-lg border border-slate-200 text-slate-400"><MoreVertical size={16} /></button>
-                  </div>
-                </div>
-              </div>
+            filteredConversations.map((c) => (
+              <ConversationItem
+                key={c.id}
+                conversation={c}
+                channel={channelFilter === "all" ? "email" : (channelFilter as MessageChannel)}
+                isSelected={selectedConversationId === c.id}
+                isIgnored={ignoredConversations.has(c.id)}
+                messageCount={(messagesByConversation[c.id] ?? []).length}
+                onClick={() => handleSelectConversation(c.id)}
+                lastMessage={messagesByConversation[c.id]?.at(-1)}
+              />
+            ))
+          )}
+          <div ref={convoSentinelRef} className="h-4 w-full" />
+          {remoteLoading && conversations.length > 0 && <div className="p-4 text-center"><ConversationListSkeleton /></div>}
+        </div>
+      </aside>
 
-              <div
-                ref={messageListRef}
-                onScroll={handleMessageListScroll}
-                className="flex-1 overflow-y-auto px-6 py-6 space-y-6 pb-28 relative bg-[#F8FAFC] min-w-0"
-              >
-                {messagesLoading ? <p className="text-xs text-slate-500 text-center">Đang tải tin nhắn cũ...</p> : null}
-                {(() => {
-                  const groups: { date: string, messages: typeof selectedConversationMessages }[] = [];
-                  selectedConversationMessages.forEach(msg => {
-                    const date = new Date(msg.receivedAt).toLocaleDateString('vi-VN');
-                    const last = groups[groups.length - 1];
-                    if (last && last.date === date) {
-                      last.messages.push(msg);
-                    } else {
-                      groups.push({ date, messages: [msg] });
-                    }
-                  });
+      <main className="flex-1 flex flex-col h-full min-w-0 bg-[#F8FAFC] relative">
+        {selectedConversation ? (
+          <>
+            <ChatHeader 
+              conversation={selectedConversation}
+              channel={channelFilter === "all" ? "email" : (channelFilter as MessageChannel)}
+              isIgnored={ignoredConversations.has(selectedConversation.id)}
+              isDetailsOpen={isDetailsOpen}
+              onToggleIgnore={handleToggleIgnore}
+              onToggleDetails={() => setIsDetailsOpen(!isDetailsOpen)}
+            />
 
-                  return groups.map((group, gIdx) => (
-                    <div key={`group-${gIdx}`} className="space-y-6">
-                      <div className="flex justify-center py-2">
-                        <span className="px-3 py-1 bg-slate-200/60 rounded-full text-[11px] font-medium text-slate-500">
-                          {(() => {
-                            const today = new Date().toLocaleDateString('vi-VN');
-                            const yesterday = new Date(Date.now() - 86400000).toLocaleDateString('vi-VN');
-                            if (group.date === today) return "Hôm nay";
-                            if (group.date === yesterday) return "Hôm qua";
-                            return group.date;
-                          })()}
-                        </span>
-                      </div>
-                      {group.messages.map((msg) => {
-                        const checked = selectedIds.has(msg.id);
-                        const isExpanded = expandedMsgIds.includes(msg.id);
-                        const isEmail = msg.channel === "email";
-                        const isOutbound = msg.isOutbound === true;
-                        
-                        const timeStr = (() => {
-                          const d = new Date(msg.receivedAt);
-                          return !isNaN(d.getTime()) 
-                            ? d.toLocaleTimeString('vi-VN', { hour: '2-digit', minute: '2-digit' }) 
-                            : "";
-                        })();
 
-                        return (
-                          <div
-                            key={msg.id}
-                            className={`relative flex gap-1.5 p-1 -mx-2 rounded-xl group/row ${
-                              checked ? "bg-indigo-50/60 ring-1 ring-indigo-200" : ""
-                            } ${isOutbound ? "flex-row-reverse" : "flex-row"}`}
-                          >
-                            {/* Selection Checkbox (always on the side relative to layout) */}
-                            <div className={`pt-2 shrink-0 w-6 flex justify-center opacity-0 group-hover/row:opacity-100 transition-opacity ${checked ? 'opacity-100' : ''}`}>
-                              <input
-                                type="checkbox"
-                                checked={checked}
-                                onChange={() => toggleSelection(msg.id)}
-                                className="w-[16px] h-[16px] rounded border-slate-300 text-indigo-600 cursor-pointer"
-                              />
+            <div
+              ref={messageListRef}
+              className="flex-1 overflow-y-auto px-6 py-4 flex flex-col-reverse relative custom-scrollbar"
+              style={{ overflowAnchor: "auto" }}
+            >
+              {hasMoreMessages && (
+                <div ref={loadMoreOldestSentinelRef} className="h-4 w-full shrink-0 order-last" />
+              )}
+
+              {messagesLoading && <div className="py-4 order-last"><MessageSkeleton /></div>}
+              
+              {(() => {
+                const groups: { date: string, messages: PlatformMessage[] }[] = [];
+                selectedConversationMessages.forEach(msg => {
+                  const date = new Date(msg.receivedAt).toLocaleDateString('vi-VN');
+                  const last = groups[groups.length - 1];
+                  if (last && last.date === date) last.messages.push(msg);
+                  else groups.push({ date, messages: [msg] });
+                });
+
+                return [...groups].reverse().map((group, gIdx) => (
+                  <div key={`group-${gIdx}`} className="flex flex-col-reverse gap-4 mb-4">
+                    {[...group.messages].reverse().map((msg) => {
+                      const isChecked = selectedIds.has(msg.id);
+                      const isExpanded = expandedMsgIds.includes(msg.id);
+                      const isOutbound = msg.isOutbound === true;
+                      const isMediaOnly = mediaOnlyMsgs.has(msg.id);
+                      
+                      const timeStr = (() => {
+                        const d = new Date(msg.receivedAt);
+                        return !isNaN(d.getTime()) 
+                          ? d.toLocaleTimeString('vi-VN', { hour: '2-digit', minute: '2-digit' }) 
+                          : "";
+                      })();
+
+                      return (
+                        <div
+                          key={msg.id}
+                          className={`relative flex gap-3 px-2 py-1 -mx-2 rounded-2xl group/row transition-colors ${
+                            isChecked ? "bg-violet-50/50 ring-1 ring-violet-200" : "hover:bg-slate-200/20"
+                          } ${isOutbound ? "flex-row-reverse" : "flex-row"}`}
+                        >
+                          <div className={`shrink-0 flex items-center justify-center w-6 transition-opacity ${isChecked ? 'opacity-100' : 'opacity-0 group-hover/row:opacity-100'}`}>
+                            <input
+                              type="checkbox"
+                              checked={isChecked}
+                              onChange={() => toggleSelection(msg.id)}
+                              className="w-4 h-4 rounded border-slate-300 text-violet-600 focus:ring-violet-500 cursor-pointer"
+                            />
+                          </div>
+
+                          {!isOutbound && (
+                            <div className="shrink-0 pt-1">
+                              {msg.senderAvatarUrl ? (
+                                <img src={msg.senderAvatarUrl} alt={msg.senderDisplay} className="w-8 h-8 rounded-full shadow-sm" />
+                              ) : (
+                                <div className="w-8 h-8 rounded-full bg-slate-200 flex items-center justify-center text-[11px] font-bold text-slate-500 border border-slate-300">
+                                  {msg.senderDisplay?.slice(0, 1).toUpperCase()}
+                                </div>
+                              )}
+                            </div>
+                          )}
+
+                          <div className={`flex-1 min-w-0 flex flex-col ${isOutbound ? "items-end" : "items-start"}`}>
+                            {!isOutbound && (
+                              <span className="text-[11px] font-bold text-slate-500 mb-1 ml-1 tracking-tight">
+                                {msg.senderDisplay}
+                              </span>
+                            )}
+                            
+                            <div
+                              className={`relative inline-block transition-all duration-200 overflow-hidden break-words ${
+                                isMediaOnly 
+                                  ? "bg-transparent border-transparent p-0 shadow-none ring-0 w-fit" 
+                                  : `max-w-[85%] w-fit rounded-2xl px-4 py-3 shadow-sm border ${
+                                      isOutbound 
+                                        ? "bg-[#e5efff] border-[#d8e8ff] text-slate-900 rounded-tr-sm" 
+                                        : "bg-white border-slate-200 text-slate-800 rounded-tl-sm shadow-[0_2px_4px_rgba(0,0,0,0.02)]"
+                                    }`
+                              }`}
+                            >
+                              <div className="min-w-0">
+                                <MessageRenderer
+                                  content={msg.content}
+                                  bodyHtml={msg.channel === "email" ? msg.bodyHtml : undefined}
+                                  mediaUrls={msg.mediaUrls}
+                                  isExpanded={isExpanded}
+                                  onMediaOnlyChange={(isMedia) => handleMediaOnlyChange(msg.id, isMedia)}
+                                  onToggleExpand={() =>
+                                    setExpandedMsgIds((p) =>
+                                      p.includes(msg.id) ? p.filter((x) => x !== msg.id) : [...p, msg.id]
+                                    )
+                                  }
+                                />
+                              </div>
+                              
+                              {!isMediaOnly && (
+                                <div className={`flex items-center gap-1 mt-2 ${isOutbound ? 'justify-end text-slate-500' : 'justify-start text-slate-400'}`}>
+                                  <span className="text-[10px] font-bold tabular-nums opacity-60">
+                                    {timeStr}
+                                  </span>
+                                </div>
+                              )}
+
+                              {isMediaOnly && (
+                                <div className={`mt-1 flex items-center gap-1 px-2 py-0.5 rounded-full bg-black/5 backdrop-blur-sm text-slate-400 text-[10px] font-bold w-fit ${isOutbound ? 'self-end' : 'self-start'}`}>
+                                  {timeStr}
+                                </div>
+                              )}
                             </div>
 
-                            {!isOutbound && (
-                              <div className="shrink-0 pt-1">
-                                <div className="w-9 h-9 rounded-full bg-slate-200 border border-slate-300 flex items-center justify-center overflow-hidden shadow-sm">
-                                  {msg.senderAvatarUrl ? (
-                                    <Image src={msg.senderAvatarUrl} alt={msg.senderDisplay || ""} className="w-full h-full object-cover" width={36} height={36} unoptimized />
-                                  ) : (
-                                    <span className="text-[12px] font-bold text-slate-500">
-                                      {msg.senderDisplay?.slice(0, 1).toUpperCase() || "?"}
-                                    </span>
-                                  )}
-                                </div>
+                            {((msg.projectIds?.length ?? 0) > 0 || msg.project?.name) && (
+                              <div className={`mt-2 flex flex-wrap gap-1.5 ${isOutbound ? "justify-end" : "justify-start"}`}>
+                                {(msg.projectIds ?? []).map((pid) => (
+                                  <span
+                                    key={`${msg.id}-${pid}`}
+                                    className="inline-flex items-center rounded-lg border border-violet-100 bg-violet-50 px-2 py-0.5 text-[9px] font-bold text-violet-700 uppercase"
+                                  >
+                                    {projectNameById.get(String(pid)) ?? `Project #${pid}`}
+                                  </span>
+                                ))}
+                                {msg.project && (
+                                  <span className="inline-flex items-center rounded-lg border border-teal-100 bg-teal-50 px-2 py-0.5 text-[9px] font-bold text-teal-700 uppercase">
+                                    {msg.project.name}
+                                  </span>
+                                )}
                               </div>
                             )}
-
-                            <div className={`flex-1 min-w-0 flex flex-col ${isOutbound ? "items-end" : "items-start"}`}>
-                              {!isOutbound && (
-                                <span className="text-[12px] font-medium text-slate-500 mb-1 ml-1">
-                                  {msg.senderDisplay}
-                                </span>
-                              )}
-                              
-                              <div
-                                className={`relative inline-block border max-w-[85%] min-w-[64px] rounded-2xl px-3.5 py-2 shadow-sm ${
-                                  isOutbound 
-                                    ? "bg-[#E5EFFF] border-blue-100 rounded-tr-sm" 
-                                    : "bg-white border-slate-200 rounded-tl-sm"
-                                }`}
-                              >
-                                <div className="pb-3 min-w-0">
-                                  <MessageRenderer
-                                    content={msg.content}
-                                    bodyHtml={isEmail ? msg.bodyHtml : undefined}
-                                    mediaUrls={msg.mediaUrls}
-                                    isExpanded={isExpanded}
-                                    onToggleExpand={() =>
-                                      setExpandedMsgIds((p) =>
-                                        p.includes(msg.id) ? p.filter((x) => x !== msg.id) : [...p, msg.id]
-                                      )
-                                    }
-                                  />
-                                </div>
-                                <div className={`absolute bottom-1.5 ${isOutbound ? 'right-2.5' : 'left-3.5'} flex items-center gap-1 ${isOutbound ? 'text-blue-500/70' : 'text-slate-400'}`}>
-                                  <span className="text-[10px] font-medium tabular-nums">{timeStr}</span>
-                                </div>
-                              </div>
-
-                              {((msg.projectIds?.length ?? 0) > 0 || msg.project?.name) && (
-                                <div className={`mt-1.5 flex flex-wrap gap-1.5 ${isOutbound ? "justify-end" : "justify-start"}`}>
-                                  {(() => {
-                                    const displayedIds = new Set<string>();
-                                    const tags: React.ReactNode[] = [];
-
-                                    (msg.projectIds ?? []).forEach((pid) => {
-                                      const sid = String(pid);
-                                      if (displayedIds.has(sid)) return;
-                                      displayedIds.add(sid);
-                                      tags.push(
-                                        <span
-                                          key={`${msg.id}-${sid}`}
-                                          className="inline-flex items-center rounded-full border border-indigo-200 bg-indigo-50 px-2 py-0.5 text-[10px] font-medium text-indigo-700"
-                                        >
-                                          {projectNameById.get(sid) ?? `Project #${sid}`}
-                                        </span>
-                                      );
-                                    });
-
-                                    if (msg.project && !displayedIds.has(String(msg.project.id))) {
-                                      tags.push(
-                                        <span
-                                          key={`${msg.id}-single`}
-                                          className="inline-flex items-center rounded-full border border-teal-200 bg-teal-50 px-2 py-0.5 text-[10px] font-medium text-teal-700"
-                                        >
-                                          {msg.project.name}
-                                        </span>
-                                      );
-                                    }
-
-                                    return tags;
-                                  })()}
-                                </div>
-                              )}
-                            </div>
                           </div>
-                        );
-                      })}
+                        </div>
+                      );
+                    })}
+
+                    {/* Date Tag moved to bottom of code - will appear at the TOP of the group in flex-col-reverse */}
+                    <div className="flex justify-center sticky top-2 z-10 mb-4 mt-2">
+                      <span className="px-3 py-1 bg-white/90 backdrop-blur-sm border border-slate-100 rounded-full text-[11px] font-bold text-slate-500 shadow-sm uppercase tracking-wider">
+                        {(() => {
+                          const today = new Date().toLocaleDateString('vi-VN');
+                          const yesterday = new Date(Date.now() - 86400000).toLocaleDateString('vi-VN');
+                          if (group.date === today) return "Hôm nay";
+                          if (group.date === yesterday) return "Hôm qua";
+                          return group.date;
+                        })()}
+                      </span>
                     </div>
-                  ));
-                })()}
-              </div>
+                  </div>
+                ));
+              })()}
+            </div>
 
-              <AnimatePresence>
-                {selectedCount > 0 ? (
-                  <motion.div initial={{ y: 20, opacity: 0 }} animate={{ y: 0, opacity: 1 }} exit={{ y: 20, opacity: 0 }} className="absolute bottom-6 left-1/2 -translate-x-1/2 bg-slate-900 text-white rounded-xl px-4 py-3 flex items-center gap-6 z-20">
-                    <span className="text-[13px] font-medium">{selectedCount} tin nhắn đã chọn</span>
-                    <button onClick={() => setIsMappingOpen(true)} className="px-4 py-1.5 text-[13px] font-semibold bg-indigo-600 hover:bg-indigo-500 text-white rounded-lg transition flex items-center gap-1">
-                      Gán vào Project <ChevronRight size={14} />
-                    </button>
-                  </motion.div>
-                ) : null}
-              </AnimatePresence>
-            </>
-          )}
-        </div>
+            <AnimatePresence>
+              {selectedCount > 0 && (
+                <BulkActionBar 
+                  selectedCount={selectedCount}
+                  onAssignToProject={() => setIsMappingOpen(true)}
+                  onClear={clearAll}
+                />
+              )}
+            </AnimatePresence>
+          </>
+        ) : (
+          <EmptyState />
+        )}
+      </main>
 
-        <AnimatePresence>
-          {isMappingOpen ? (
-            <MappingPanel
-              selectedMessages={selectedConversationMessages.filter((m) => selectedIds.has(m.id))}
-              projects={localProjects}
-              isSaving={saving}
-              onClose={() => setIsMappingOpen(false)}
-              onRemoveMessage={(id) => toggleSelection(id)}
-              onCreateProject={(code) => {
-                const id = `proj-${Date.now()}`;
-                setLocalProjects((prev) => [
-                  { id, code, name: code, ownerName: "", status: "new", lastUpdateAt: new Date().toISOString(), unreadCount: 0, summary: "", todoList: [] },
-                  ...prev,
-                ]);
-              }}
-              onSaveMapping={handleSaveMapping}
-            />
-          ) : null}
-        </AnimatePresence>
+      <div className="flex-none">
+        <DetailsPanel 
+          conversation={selectedConversation}
+          isOpen={isDetailsOpen}
+          onClose={() => setIsDetailsOpen(false)}
+        />
       </div>
+
+      <AnimatePresence>
+        {isMappingOpen ? (
+          <MappingPanel
+            selectedMessages={selectedConversationMessages.filter((m) => selectedIds.has(m.id))}
+            projects={localProjects}
+            isSaving={saving}
+            onClose={() => setIsMappingOpen(false)}
+            onRemoveMessage={(id) => toggleSelection(id)}
+            onCreateProject={(code) => {
+              const id = `proj-${Date.now()}`;
+              setLocalProjects((prev) => [
+                { id, code, name: code, ownerName: "", status: "new", lastUpdateAt: new Date().toISOString(), unreadCount: 0, summary: "", todoList: [] },
+                ...prev,
+              ]);
+            }}
+            onSaveMapping={handleSaveMapping}
+          />
+        ) : null}
+      </AnimatePresence>
 
       {toastMessage ? <Toast message={toastMessage} onClose={() => setToastMessage(null)} /> : null}
     </div>
