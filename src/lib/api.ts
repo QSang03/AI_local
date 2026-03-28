@@ -433,7 +433,8 @@ export async function getProjectMessagesList(
     const qs = new URLSearchParams();
     qs.set("limit", String(limit));
     qs.set("offset", String(offset));
-    return await requestJson<PlatformMessage[]>(`/projects/${projectId}/messages?${qs.toString()}`);
+    const raw = await requestJson<unknown[]>(`/projects/${projectId}/messages?${qs.toString()}`);
+    return (raw || []).map(normalizeInboxMessage);
   } catch {
     return [];
   }

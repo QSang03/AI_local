@@ -15,8 +15,8 @@ import {
   MessageSquare,
   LogOut,
   User as UserIcon,
-  ChevronRight,
-  ChevronLeft
+  PanelLeftOpen,
+  PanelLeftClose
 } from "lucide-react";
 
 const navItems = [
@@ -58,8 +58,8 @@ export function SideNav() {
   }, []);
 
   return (
-    <aside className={`flex flex-col border-b border-slate-200 bg-[#1E293B] shrink-0 md:border-b-0 md:px-2 md:py-6 text-slate-300 transition-all duration-300 ease-in-out ${isCollapsed ? "w-full md:w-[68px]" : "w-full md:w-[260px]"}`}>
-      <div className={`mb-8 flex ${isCollapsed ? "justify-center" : "justify-between px-4"} items-center`}>
+    <aside className={`relative flex flex-col border-b border-slate-200 bg-[#1E293B] shrink-0 md:border-b-0 md:px-2 md:py-6 text-slate-300 transition-all duration-300 ease-in-out ${isCollapsed ? "w-full md:w-[68px]" : "w-full md:w-[260px]"}`}>
+      <div className={`mb-8 flex ${isCollapsed ? "justify-center" : "justify-start px-4"} items-center`}>
         <div className="w-10 h-10 bg-indigo-600 rounded-xl flex items-center justify-center text-white shadow-lg shadow-indigo-600/20 shrink-0">
           <span className="text-xl font-bold">O</span>
         </div>
@@ -69,13 +69,19 @@ export function SideNav() {
              <span className="text-[10px] font-medium text-slate-400 uppercase tracking-widest">FE Workflow</span>
           </div>
         )}
-        <button 
-          onClick={toggleSidebar}
-          className={`hidden md:flex ml-auto items-center justify-center w-6 h-6 rounded-full bg-slate-800 border border-slate-700 hover:bg-slate-700 transition shadow-sm ${!isCollapsed ? "rotate-0" : "absolute -right-3 top-10 z-50 bg-indigo-600 border-indigo-500"}`}
-        >
-          {isCollapsed ? <ChevronRight size={14} className="text-white" /> : <ChevronLeft size={14} />}
-        </button>
       </div>
+      <button 
+        onClick={toggleSidebar}
+        title={isCollapsed ? "Mở rộng sidebar" : "Thu gọn sidebar"}
+        className={`hidden md:flex absolute items-center justify-center w-8 h-8 rounded-lg text-slate-400 border border-slate-700 hover:bg-slate-800 hover:text-white transition-all duration-300 z-50 shadow-lg ${
+          isCollapsed 
+            ? "-right-4 bg-slate-900 shadow-indigo-500/10" 
+            : "right-4 bg-[#1E293B]"
+        }`}
+        style={{ top: "28px" }}
+      >
+        {isCollapsed ? <PanelLeftOpen size={20} className="text-white" /> : <PanelLeftClose size={20} />}
+      </button>
       <nav className={`grid grid-cols-2 gap-2 md:grid-cols-1 md:space-y-2 px-2 md:px-0`}>
         {(() => {
           const visibleNavItems = navItems.filter(

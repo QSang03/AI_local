@@ -6,7 +6,7 @@ import { getProjectSummary, getProjectTodoList, updateProjectTodoItemStatus } fr
 import { ProjectSummaryResponse } from '@/lib/api';
 import { PlatformMessage } from '@/types/domain';
 import { BarChart3, MessageCircle, CheckCircle2, Clock } from 'lucide-react';
-import { ArrowLeft, Sparkles, Calendar, Trash2, Plus, Copy, Check, AlertCircle } from 'lucide-react';
+import { ArrowLeft, Sparkles, Calendar, Trash2, Copy, Check, AlertCircle } from 'lucide-react';
 import { formatDistanceToNow, format } from 'date-fns';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
@@ -78,9 +78,6 @@ export default function ProjectDetailTabs({ project, ai, quickSummary, chats, su
   const [todos, setTodos] = useState<TodoItem[]>([]);
   const [todoLoading, setTodoLoading] = useState(false);
   const [todoError, setTodoError] = useState<string | null>(null);
-  const [newTodoText, setNewTodoText] = useState('');
-  const [newTodoPriority, setNewTodoPriority] = useState<'low' | 'medium' | 'high'>('medium');
-  const [newTodoDueDate, setNewTodoDueDate] = useState('');
   const [copiedId, setCopiedId] = useState<string | null>(null);
 
   // Load todos from API on component mount and date change
@@ -157,21 +154,6 @@ export default function ProjectDetailTabs({ project, ai, quickSummary, chats, su
       });
   }
 
-  function addTodo() {
-    if (!newTodoText.trim()) return;
-    const newTodo: TodoItem = {
-      id: `todo-${Date.now()}`,
-      itemIndex: -1, // Locally added tasks don't have an index yet
-      text: newTodoText.trim(),
-      priority: newTodoPriority,
-      dueDate: newTodoDueDate || undefined,
-      completed: false,
-    };
-    setTodos((prev) => [newTodo, ...prev]);
-    setNewTodoText('');
-    setNewTodoPriority('medium');
-    setNewTodoDueDate('');
-  }
 
   function removeTodo(id: string) {
     setTodos((prev) => prev.filter((t) => t.id !== id));
@@ -246,14 +228,6 @@ export default function ProjectDetailTabs({ project, ai, quickSummary, chats, su
             >
               {project.status ?? 'Unknown'}
             </span>
-            <button
-              className="inline-flex items-center gap-2 rounded-lg text-slate-600 hover:bg-slate-100 p-2 transition-colors"
-              title="Edit project"
-            >
-              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-                <path d="M17 3a2.828 2.828 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5L17 3z" />
-              </svg>
-            </button>
           </div>
         </div>
 
@@ -517,59 +491,11 @@ export default function ProjectDetailTabs({ project, ai, quickSummary, chats, su
               </div>
             )}
 
-            {/* Add Todo Bar */}
-            <div className="rounded-xl border border-slate-200 bg-white p-4 shadow-sm">
-              <div className="flex flex-col gap-3 md:flex-row md:items-end md:gap-2">
-                <div className="flex-1">
-                  <label className="block text-sm font-medium text-slate-700 mb-2">Add a new task</label>
-                  <input
-                    type="text"
-                    value={newTodoText}
-                    onChange={(e) => setNewTodoText(e.target.value)}
-                    onKeyDown={(e) => {
-                      if (e.key === 'Enter') addTodo();
-                    }}
-                    placeholder="Add a new task..."
-                    className="w-full rounded-lg border border-slate-200 px-4 py-2 text-sm focus:outline-none focus:ring-1 focus:ring-indigo-500"
-                  />
-                </div>
-
-                {/* Priority */}
-                <select
-                  value={newTodoPriority}
-                  onChange={(e) => setNewTodoPriority(e.target.value as 'low' | 'medium' | 'high')}
-                  className="rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm focus:outline-none focus:ring-1 focus:ring-indigo-500"
-                >
-                  <option value="low">Low</option>
-                  <option value="medium">Medium</option>
-                  <option value="high">High</option>
-                </select>
-
-                {/* Due Date */}
-                <input
-                  type="date"
-                  value={newTodoDueDate}
-                  onChange={(e) => setNewTodoDueDate(e.target.value)}
-                  className="rounded-lg border border-slate-200 px-3 py-2 text-sm focus:outline-none focus:ring-1 focus:ring-indigo-500"
-                />
-
-                {/* Add Button */}
-                <button
-                  onClick={addTodo}
-                  disabled={!newTodoText.trim()}
-                  className="inline-flex items-center justify-center gap-2 rounded-lg bg-indigo-600 px-4 py-2 text-sm font-medium text-white hover:bg-indigo-700 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
-                >
-                  <Plus size={16} />
-                  Add
-                </button>
-              </div>
-            </div>
-
             {/* Todos List */}
             {todos.length === 0 ? (
               <div className="rounded-xl border-2 border-dashed border-slate-300 bg-slate-50 py-12 text-center">
                 <CheckCircle2 size={40} className="text-slate-300 mx-auto mb-3" />
-                <p className="text-slate-500">No tasks yet. Add your first task above.</p>
+                <p className="text-slate-500">Chưa có nhiệm vụ nào được ghi nhận.</p>
               </div>
             ) : (
               <div className="space-y-6">
@@ -854,10 +780,21 @@ function ProjectMessagesTab({ messages }: { messages: PlatformMessage[] }) {
           const sender = msg.senderDisplay || 'Unknown User';
           return (
             <div key={idx} className="rounded-xl border border-slate-200 bg-white p-4 shadow-sm flex items-start gap-4 transition-colors hover:bg-slate-50">
-              <div className={`flex h-10 w-10 flex-shrink-0 items-center justify-center rounded-full text-sm font-semibold uppercase 
-                ${idx % 2 === 0 ? 'bg-indigo-100 text-indigo-700' : 'bg-teal-100 text-teal-700'}`}>
-                {sender.substring(0, 2)}
-              </div>
+              {msg.senderAvatarUrl ? (
+                <img 
+                  src={msg.senderAvatarUrl} 
+                  alt={sender} 
+                  className="flex h-10 w-10 flex-shrink-0 rounded-full object-cover shadow-sm bg-slate-100"
+                  onError={(e) => {
+                    (e.target as HTMLImageElement).src = ''; // Fallback if image fails to load
+                  }}
+                />
+              ) : (
+                <div className={`flex h-10 w-10 flex-shrink-0 items-center justify-center rounded-full text-sm font-semibold uppercase 
+                  ${idx % 2 === 0 ? 'bg-indigo-100 text-indigo-700' : 'bg-teal-100 text-teal-700'}`}>
+                  {sender.substring(0, 2)}
+                </div>
+              )}
               <div className="flex-grow min-w-0">
                 <div className="flex items-center justify-between mb-1">
                   <span className="font-semibold text-slate-900 truncate pr-4">{sender}</span>
