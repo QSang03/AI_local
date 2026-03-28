@@ -863,7 +863,7 @@ export function ChannelConfigForm({ configs }: ChannelConfigFormProps) {
                  ) : null}
                  <p className="mt-1 text-xs text-slate-500">Created: {config.created_at}</p>
                  <div className="mt-2 flex flex-wrap items-center gap-2">
-                   {isZaloConfig(config) ? (
+                   {isZaloConfig(config) && String(config.status || "").toLowerCase() !== "running" ? (
                      <button
                        type="button"
                        onClick={() => void handleLoginFromList(config)}
@@ -873,7 +873,7 @@ export function ChannelConfigForm({ configs }: ChannelConfigFormProps) {
                        {startingZaloLogin && Number(zaloChannelId) === config.id ? "Dang Login..." : "Login"}
                      </button>
                    ) : null}
-                   {isWhatsAppConfig(config) ? (
+                   {isWhatsAppConfig(config) && String(config.status || "").toLowerCase() !== "running" ? (
                      <button
                        type="button"
                        onClick={() => void handleLoginFromList(config)}

@@ -50,18 +50,17 @@ function getRelativeTime(timestamp: string) {
 
 function validateCreateDraft(draft: UserDraft): FieldErrors {
   const errors: FieldErrors = {};
-  if (!draft.username.trim()) errors.username = "Username khong duoc de trong.";
-  if (!draft.email.trim()) errors.email = "Email khong duoc de trong.";
-  if (draft.email && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(draft.email)) {
-    errors.email = "Email khong hop le.";
+  if (!draft.username.trim()) errors.username = "Username không được để trống.";
+  if (!draft.email.trim()) errors.email = "Email không được để trống.";
+  if (draft.email && !/^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$/.test(draft.email)) {
+    errors.email = "Email không hợp lệ.";
   }
   if (!draft.password.trim()) {
-    errors.password = "Password khong duoc de trong.";
+    errors.password = "Mật khẩu không được để trống.";
   } else {
-    const hasLetter = /[A-Za-z]/.test(draft.password);
     const hasNumber = /\d/.test(draft.password);
-    if (draft.password.length < 8 || !hasLetter || !hasNumber) {
-      errors.password = "Password toi thieu 8 ky tu, gom chu va so.";
+    if (draft.password.length < 8 || !hasNumber) {
+      errors.password = "Mật khẩu tối thiểu 8 ký tự và phải có ít nhất 1 chữ số.";
     }
   }
   return errors;
@@ -69,16 +68,15 @@ function validateCreateDraft(draft: UserDraft): FieldErrors {
 
 function validateEditDraft(draft: UserDraft): FieldErrors {
   const errors: FieldErrors = {};
-  if (!draft.username.trim()) errors.username = "Username khong duoc de trong.";
-  if (!draft.email.trim()) errors.email = "Email khong duoc de trong.";
-  if (draft.email && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(draft.email)) {
-    errors.email = "Email khong hop le.";
+  if (!draft.username.trim()) errors.username = "Username không được để trống.";
+  if (!draft.email.trim()) errors.email = "Email không được để trống.";
+  if (draft.email && !/^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$/.test(draft.email)) {
+    errors.email = "Email không hợp lệ.";
   }
   if (draft.password.trim()) {
-    const hasLetter = /[A-Za-z]/.test(draft.password);
     const hasNumber = /\d/.test(draft.password);
-    if (draft.password.length < 8 || !hasLetter || !hasNumber) {
-      errors.password = "Password moi toi thieu 8 ky tu, gom chu va so.";
+    if (draft.password.length < 8 || !hasNumber) {
+      errors.password = "Mật khẩu mới tối thiểu 8 ký tự và phải có ít nhất 1 chữ số.";
     }
   }
   return errors;
@@ -317,7 +315,7 @@ export default function UsersPage() {
         await loadUsers();
         setIsEditOpen(false);
         setEditingUser(null);
-        setToastMessage("✅ Da cap nhat thong tin nguoi dung.");
+        setToastMessage("✅ Đã cập nhật thông tin người dùng.");
       } else {
         setToastMessage(`❌ ${result.message}`);
       }
@@ -358,8 +356,8 @@ export default function UsersPage() {
       </div>
 
       <PageHeader
-        title="Quan ly nguoi dung"
-        subtitle="Tao, chinh sua va quan ly tai khoan nguoi dung trong he thong."
+        title="Quản lý người dùng"
+        subtitle="Tạo, chỉnh sửa và quản lý tài khoản người dùng trong hệ thống."
       />
 
       <section className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
@@ -370,7 +368,7 @@ export default function UsersPage() {
             className="flex items-center gap-2 rounded-xl bg-blue-600 px-4 py-2 text-sm font-semibold text-white hover:bg-blue-700 transition-colors"
           >
             <span>＋</span>
-            <span>Them nguoi dung</span>
+            <span>Thêm người dùng</span>
           </button>
         </div>
 
@@ -384,7 +382,7 @@ export default function UsersPage() {
                 aria-label="Tim theo username hoac email"
                 value={query}
                 onChange={(e) => setQuery(e.target.value)}
-                placeholder="Nhap username hoac email..."
+                placeholder="Nhập username hoặc email..."
                 className="w-full rounded-xl border border-slate-300 py-2 pl-9 pr-3 text-sm outline-none focus:border-slate-700"
               />
             </div>
@@ -399,7 +397,7 @@ export default function UsersPage() {
               onChange={(e) => setRoleFilter(e.target.value as "all" | AppUserRole)}
               className="w-full rounded-xl border border-slate-300 px-3 py-2 text-sm outline-none focus:border-slate-700"
             >
-              <option value="all">Tat ca ({counts.total})</option>
+              <option value="all">Tất cả ({counts.total})</option>
               <option value="admin">Admin ({counts.admin})</option>
               <option value="sale">Sale ({counts.sale})</option>
             </select>
@@ -414,7 +412,7 @@ export default function UsersPage() {
               }}
               className="h-10 rounded-xl border border-slate-300 bg-white px-3 text-sm font-medium text-slate-700 hover:bg-slate-50"
             >
-              Xoa bo loc
+              Xóa bộ lọc
             </button>
           ) : null}
         </div>
@@ -543,7 +541,7 @@ export default function UsersPage() {
             className="relative z-10 w-full max-w-lg rounded-2xl bg-white p-6 shadow-2xl"
           >
             <div className="mb-4 flex items-center justify-between">
-              <h2 className="text-lg font-semibold text-slate-900">Them nguoi dung moi</h2>
+              <h2 className="text-lg font-semibold text-slate-900">Thêm người dùng mới</h2>
               <button
                 type="button"
                 onClick={() => setIsCreateModalOpen(false)}
@@ -564,8 +562,10 @@ export default function UsersPage() {
                   onBlur={() => setCreateTouched((s) => ({ ...s, username: true }))}
                   onChange={(e) => {
                     const username = e.target.value;
-                    setCreateDraft((s) => ({ ...s, username }));
-                    setCreateErrors((s) => ({ ...s, ...validateCreateDraft({ ...createDraft, username }) }));
+                    const nextDraft = { ...createDraft, username };
+                    setCreateDraft(nextDraft);
+                    setCreateErrors(validateCreateDraft(nextDraft));
+                    setCreateTouched((s) => ({ ...s, username: true }));
                   }}
                   placeholder="vd: quocduong"
                   className={`w-full rounded-xl border px-3 py-2 outline-none ${createTouched.username && createErrors.username ? "border-rose-400 bg-rose-50" : "border-slate-300 focus:border-slate-700"}`}
@@ -583,8 +583,10 @@ export default function UsersPage() {
                   onBlur={() => setCreateTouched((s) => ({ ...s, email: true }))}
                   onChange={(e) => {
                     const email = e.target.value;
-                    setCreateDraft((s) => ({ ...s, email }));
-                    setCreateErrors((s) => ({ ...s, ...validateCreateDraft({ ...createDraft, email }) }));
+                    const nextDraft = { ...createDraft, email };
+                    setCreateDraft(nextDraft);
+                    setCreateErrors(validateCreateDraft(nextDraft));
+                    setCreateTouched((s) => ({ ...s, email: true }));
                   }}
                   placeholder="vd: duong@example.com"
                   className={`w-full rounded-xl border px-3 py-2 outline-none ${createTouched.email && createErrors.email ? "border-rose-400 bg-rose-50" : "border-slate-300 focus:border-slate-700"}`}
@@ -602,13 +604,15 @@ export default function UsersPage() {
                   onBlur={() => setCreateTouched((s) => ({ ...s, password: true }))}
                   onChange={(e) => {
                     const password = e.target.value;
-                    setCreateDraft((s) => ({ ...s, password }));
-                    setCreateErrors((s) => ({ ...s, ...validateCreateDraft({ ...createDraft, password }) }));
+                    const nextDraft = { ...createDraft, password };
+                    setCreateDraft(nextDraft);
+                    setCreateErrors(validateCreateDraft(nextDraft));
+                    setCreateTouched((s) => ({ ...s, password: true }));
                   }}
                   placeholder="strong-pass-123"
                   className={`w-full rounded-xl border px-3 py-2 outline-none ${createTouched.password && createErrors.password ? "border-rose-400 bg-rose-50" : "border-slate-300 focus:border-slate-700"}`}
                 />
-                <p className="text-xs text-slate-500">Toi thieu 8 ky tu, bao gom chu va so.</p>
+                <p className="text-xs text-slate-500">Tối thiểu 8 ký tự, bao gồm ít nhất 1 chữ số.</p>
                 {createTouched.password && createErrors.password ? <p className="text-xs text-rose-600">{createErrors.password}</p> : null}
               </div>
 
@@ -659,7 +663,7 @@ export default function UsersPage() {
             className="relative z-10 w-full max-w-lg rounded-2xl bg-white p-6 shadow-2xl"
           >
             <div className="mb-4 flex items-center justify-between">
-              <h3 className="text-lg font-semibold text-slate-900">Chinh sua nguoi dung: {editingUser.username}</h3>
+              <h3 className="text-lg font-semibold text-slate-900">Chỉnh sửa người dùng: {editingUser.username}</h3>
               <button
                 type="button"
                 onClick={() => setIsEditOpen(false)}
@@ -680,8 +684,10 @@ export default function UsersPage() {
                   onBlur={() => setEditTouched((s) => ({ ...s, username: true }))}
                   onChange={(e) => {
                     const username = e.target.value;
-                    setEditDraft((s) => ({ ...s, username }));
-                    setEditErrors((s) => ({ ...s, ...validateEditDraft({ ...editDraft, username }) }));
+                    const nextDraft = { ...editDraft, username };
+                    setEditDraft(nextDraft);
+                    setEditErrors(validateEditDraft(nextDraft));
+                    setEditTouched((s) => ({ ...s, username: true }));
                   }}
                   className={`w-full rounded-xl border px-3 py-2 outline-none ${editTouched.username && editErrors.username ? "border-rose-400 bg-rose-50" : "border-slate-300 focus:border-slate-700"}`}
                 />
@@ -698,12 +704,35 @@ export default function UsersPage() {
                   onBlur={() => setEditTouched((s) => ({ ...s, email: true }))}
                   onChange={(e) => {
                     const email = e.target.value;
-                    setEditDraft((s) => ({ ...s, email }));
-                    setEditErrors((s) => ({ ...s, ...validateEditDraft({ ...editDraft, email }) }));
+                    const nextDraft = { ...editDraft, email };
+                    setEditDraft(nextDraft);
+                    setEditErrors(validateEditDraft(nextDraft));
+                    setEditTouched((s) => ({ ...s, email: true }));
                   }}
                   className={`w-full rounded-xl border px-3 py-2 outline-none ${editTouched.email && editErrors.email ? "border-rose-400 bg-rose-50" : "border-slate-300 focus:border-slate-700"}`}
                 />
                 {editTouched.email && editErrors.email ? <p className="text-xs text-rose-600">{editErrors.email}</p> : null}
+              </div>
+
+              <div className="space-y-1">
+                <label htmlFor="edit-password" title="Optional" className="text-sm font-medium text-slate-700">Mật khẩu mới (để trống nếu không đổi)</label>
+                <input
+                  id="edit-password"
+                  aria-label="Mật khẩu mới"
+                  type="password"
+                  value={editDraft.password}
+                  onBlur={() => setEditTouched((s) => ({ ...s, password: true }))}
+                  onChange={(e) => {
+                    const password = e.target.value;
+                    const nextDraft = { ...editDraft, password };
+                    setEditDraft(nextDraft);
+                    setEditErrors(validateEditDraft(nextDraft));
+                    setEditTouched((s) => ({ ...s, password: true }));
+                  }}
+                  placeholder="Để trống nếu muốn giữ nguyên..."
+                  className={`w-full rounded-xl border px-3 py-2 outline-none ${editTouched.password && editErrors.password ? "border-rose-400 bg-rose-50" : "border-slate-300 focus:border-slate-700"}`}
+                />
+                {editTouched.password && editErrors.password ? <p className="text-xs text-rose-600">{editErrors.password}</p> : null}
               </div>
               <div className="space-y-1">
                 <label htmlFor="edit-role" className="text-sm font-medium text-slate-700">Role</label>
@@ -733,7 +762,7 @@ export default function UsersPage() {
                   onClick={() => setIsEditOpen(false)}
                   className="rounded-xl border border-slate-300 bg-white px-4 py-2 text-sm font-semibold text-slate-700 hover:bg-slate-50"
                 >
-                  Huy
+                  Hủy
                 </button>
               </div>
             </form>
