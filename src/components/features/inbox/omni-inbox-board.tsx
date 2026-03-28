@@ -194,10 +194,16 @@ export function OmniInboxBoard({
   }, [channelFilter]);
 
   const loadConversationsPage = useCallback(
-    async (offset: number, append: boolean) => {
+    async (append: boolean) => {
+      if (remoteLoading) return;
+      if (append && !conversationHasMore) return;
+
+      const offset = append ? conversationOffset : 0;
       const key = `${providerParam ?? "all"}:${offset}:${append ? "append" : "replace"}`;
+      
       if (conversationFetchesRef.current.has(key)) return;
       conversationFetchesRef.current.add(key);
+      
       setRemoteLoading(true);
       try {
         const data = await getInboxConversations({
@@ -206,18 +212,24 @@ export function OmniInboxBoard({
           limit: PAGE_SIZE,
           offset,
         });
+
         setConversations((prev) => (append ? [...prev, ...data.items] : data.items));
+        
         const nextOffset = offset + data.items.length;
         setConversationOffset(nextOffset);
-        const total = data.total;
-        setConversationHasMore(
-          typeof total === "number" ? nextOffset < total : data.items.length === PAGE_SIZE,
-        );
+        
+        // Match message pattern: use data.items.length === PAGE_SIZE for hasMore
+        const hasMore = data.items.length === PAGE_SIZE;
+        setConversationHasMore(hasMore);
+      } catch (err) {
+        console.error("Error loading conversations:", err);
+        // Remove key to allow retry if it failed
+        conversationFetchesRef.current.delete(key);
       } finally {
         setRemoteLoading(false);
       }
     },
-    [providerParam],
+    [providerParam, conversationOffset, conversationHasMore, remoteLoading],
   );
 
   const loadConversationMessages = useCallback(
@@ -292,6 +304,12 @@ export function OmniInboxBoard({
   }, [messagesByConversation]);
 
   useEffect(() => {
+    // If we have initial data and we're on the default provider (email), skip the first reset
+    if (!initializedProviderRef.current && initialConversations.length > 0 && providerParam === 'email') {
+      initializedProviderRef.current = providerParam;
+      return;
+    }
+    
     if (initializedProviderRef.current === providerParam) return;
     initializedProviderRef.current = providerParam;
     
@@ -306,7 +324,7 @@ export function OmniInboxBoard({
     setMessageMetaByConversation({});
     setMediaOnlyMsgs(new Set());
     
-    void loadConversationsPage(0, false);
+    void loadConversationsPage(false);
   }, [providerParam, loadConversationsPage]);
 
   useEffect(() => {
@@ -334,6 +352,7 @@ export function OmniInboxBoard({
     }
   }, [selectedConversationId, messagesByConversation, loadConversationMessages]);
 
+  // Match message observer pattern for robust trigger
   useEffect(() => {
     const root = convoListRef.current;
     const sentinel = convoSentinelRef.current;
@@ -341,18 +360,17 @@ export function OmniInboxBoard({
 
     const obs = new IntersectionObserver(
       (entries) => {
-        entries.forEach((entry) => {
-          if (entry.isIntersecting && conversationHasMore && !remoteLoading) {
-            void loadConversationsPage(conversationOffset, true);
-          }
-        });
+        const entry = entries[0];
+        if (entry && entry.isIntersecting && !remoteLoading && conversationHasMore) {
+          void loadConversationsPage(true);
+        }
       },
-      { root, rootMargin: "200px", threshold: 0.1 },
+      { root, rootMargin: "0px", threshold: 0.1 },
     );
 
     obs.observe(sentinel);
     return () => obs.disconnect();
-  }, [conversationHasMore, conversationOffset, remoteLoading, loadConversationsPage]);
+  }, [conversationHasMore, remoteLoading, loadConversationsPage]);
 
   useEffect(() => {
     const scrollContainer = messageListRef.current;
