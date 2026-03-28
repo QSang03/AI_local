@@ -3,7 +3,11 @@ import { CheckCheck, Archive, X, Share } from "lucide-react";
 
 interface BulkActionBarProps {
   selectedCount: number;
+  isUnmarkingMode?: boolean;
+  totalAvailable?: number;
+  onSelectAll: () => void;
   onAssignToProject: () => void;
+  onUnmarkFromProject: () => void;
   onClear: () => void;
   onMarkRead?: () => void; // Optional if we don't have this API yet
   onArchive?: () => void;  // Optional API
@@ -11,7 +15,11 @@ interface BulkActionBarProps {
 
 export function BulkActionBar({
   selectedCount,
+  isUnmarkingMode,
+  totalAvailable,
+  onSelectAll,
   onAssignToProject,
+  onUnmarkFromProject,
   onClear,
   onMarkRead,
   onArchive,
@@ -31,6 +39,15 @@ export function BulkActionBar({
       </div>
 
       <div className="flex items-center gap-1 px-1 shrink-0">
+        {selectedCount < (totalAvailable || 0) && (
+          <button
+            onClick={onSelectAll}
+            className="flex items-center gap-1.5 px-3 py-1.5 text-[12px] font-medium text-slate-300 hover:text-white hover:bg-slate-800 rounded-lg transition"
+          >
+            <CheckCheck size={14} /> Chọn tất cả
+          </button>
+        )}
+
         {onMarkRead && (
           <button
             onClick={onMarkRead}
@@ -49,12 +66,21 @@ export function BulkActionBar({
           </button>
         )}
 
-        <button
-          onClick={onAssignToProject}
-          className="flex items-center gap-1.5 px-3 py-1.5 text-[12px] font-semibold text-white bg-violet-600 hover:bg-violet-500 active:bg-violet-700 rounded-lg transition ml-1 shadow-sm"
-        >
-          <Share size={14} /> Gán Project
-        </button>
+        {isUnmarkingMode ? (
+          <button
+            onClick={onUnmarkFromProject}
+            className="flex items-center gap-1.5 px-3 py-1.5 text-[12px] font-semibold text-white bg-rose-600 hover:bg-rose-500 active:bg-rose-700 rounded-lg transition ml-1 shadow-sm"
+          >
+            <X size={14} /> Gỡ Project
+          </button>
+        ) : (
+          <button
+            onClick={onAssignToProject}
+            className="flex items-center gap-1.5 px-3 py-1.5 text-[12px] font-semibold text-white bg-violet-600 hover:bg-violet-500 active:bg-violet-700 rounded-lg transition ml-1 shadow-sm"
+          >
+            <Share size={14} /> Gán Project
+          </button>
+        )}
 
         <div className="w-px h-5 bg-slate-700 mx-1" />
 

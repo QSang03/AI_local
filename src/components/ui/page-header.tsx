@@ -1,3 +1,5 @@
+
+
 interface PageHeaderProps {
   title: string;
   subtitle: string;
@@ -13,7 +15,9 @@ export function PageHeader({ title, subtitle, action }: PageHeaderProps) {
         </h1>
         <p className="text-sm text-slate-600 md:text-base">{subtitle}</p>
       </div>
-      {action ? <div>{action}</div> : null}
+      <div className="flex items-center gap-4">
+        {action ? <div>{action}</div> : null}
+      </div>
     </header>
   );
 }

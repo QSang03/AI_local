@@ -6,7 +6,8 @@ import {
   getInboxConversations, 
   getInboxMessages, 
   ignoreConversation, 
-  saveMessageProjectMapping 
+  saveMessageProjectMapping, 
+  unmarkMessageFromProject 
 } from "@/lib/api";
 import { 
   InboxConversationSummary, 
@@ -145,6 +146,10 @@ export function OmniInboxBoard({
   const messageFetchesRef = useRef<Set<string>>(new Set());
   const initializedProviderRef = useRef<string | undefined>(undefined);
 
+  const isMessageAssigned = useCallback((msg: PlatformMessage) => {
+    return (msg.projectIds?.length ?? 0) > 0 || !!msg.project;
+  }, []);
+
   useEffect(() => {
     if (conversations.length > 0) {
       setIgnoredConversations(prev => {
@@ -208,7 +213,7 @@ export function OmniInboxBoard({
       try {
         const data = await getInboxConversations({
           provider: providerParam,
-          include_ignored: false,
+          include_ignored: !hideBlacklisted,
           limit: PAGE_SIZE,
           offset,
         });
@@ -229,7 +234,7 @@ export function OmniInboxBoard({
         setRemoteLoading(false);
       }
     },
-    [providerParam, conversationOffset, conversationHasMore, remoteLoading],
+    [providerParam, conversationOffset, conversationHasMore, remoteLoading, hideBlacklisted],
   );
 
   const loadConversationMessages = useCallback(
@@ -303,17 +308,19 @@ export function OmniInboxBoard({
     }
   }, [messagesByConversation]);
 
+  const stateKey = `${providerParam ?? "all"}:${hideBlacklisted}:${initialConversations.length}`;
+
   useEffect(() => {
-    // If we have initial data and we're on the default provider (email), skip the first reset
-    if (!initializedProviderRef.current && initialConversations.length > 0 && providerParam === 'email') {
-      initializedProviderRef.current = providerParam;
+    // If we have initial data, skip the first reset for the default state
+    if (!initializedProviderRef.current && initialConversations.length > 0 && providerParam === 'email' && hideBlacklisted) {
+      initializedProviderRef.current = stateKey;
       return;
     }
     
-    if (initializedProviderRef.current === providerParam) return;
-    initializedProviderRef.current = providerParam;
+    if (initializedProviderRef.current === stateKey) return;
+    initializedProviderRef.current = stateKey;
     
-    // THOROUGH RESET on tab change - Always load fresh
+    // THOROUGH RESET on tab change or blacklist toggle - Always load fresh
     conversationFetchesRef.current.clear();
     messageFetchesRef.current.clear();
     setConversationOffset(0);
@@ -325,7 +332,19 @@ export function OmniInboxBoard({
     setMediaOnlyMsgs(new Set());
     
     void loadConversationsPage(false);
-  }, [providerParam, loadConversationsPage]);
+  }, [stateKey, loadConversationsPage]);
+
+  // Offset the global AI Status widget when right panels are open
+  useEffect(() => {
+    let offset = 0;
+    if (isMappingOpen) offset = 360; // MappingPanel width
+    else if (isDetailsOpen) offset = 280; // DetailsPanel width
+    
+    document.documentElement.style.setProperty('--ai-widget-offset', `${offset}px`);
+    return () => {
+      document.documentElement.style.setProperty('--ai-widget-offset', '0px');
+    };
+  }, [isMappingOpen, isDetailsOpen]);
 
   useEffect(() => {
     if (conversations.length === 0) return;
@@ -420,6 +439,14 @@ export function OmniInboxBoard({
     [selectedConversationId, messagesByConversation],
   );
 
+  const selectionMode = useMemo(() => {
+    if (selectedIds.size === 0) return 'NONE';
+    const firstId = Array.from(selectedIds)[0];
+    const msg = selectedConversationMessages.find(m => m.id === firstId);
+    if (!msg) return 'NONE'; // Fallback if not found in current view
+    return isMessageAssigned(msg) ? 'UNMARKING' : 'ASSIGNING';
+  }, [selectedIds, selectedConversationMessages, isMessageAssigned]);
+
   const handleSelectConversation = (id: string) => {
     if (id === selectedConversationId) return;
     if (channelFilter !== "all") {
@@ -428,6 +455,39 @@ export function OmniInboxBoard({
     setSelectedConversationId(id);
     clearAll();
     setIsMappingOpen(false);
+  };
+
+  const handleToggleSelection = (id: string) => {
+    const msg = selectedConversationMessages.find(m => m.id === id);
+    if (!msg) return;
+
+    if (selectedIds.size > 0) {
+      const isAssigned = isMessageAssigned(msg);
+      if (selectionMode === 'UNMARKING' && !isAssigned) return;
+      if (selectionMode === 'ASSIGNING' && isAssigned) return;
+    }
+
+    toggleSelection(id);
+  };
+
+  const handleSelectAll = (ids: string[]) => {
+    // If starting fresh, only select unassigned messages by default (standard behavior)
+    // or if we want to be smarter, check if we're already in a mode.
+    if (selectedIds.size === 0) {
+      const unassignedIds = selectedConversationMessages
+        .filter(m => !isMessageAssigned(m))
+        .map(m => m.id);
+      selectAll(unassignedIds);
+    } else {
+      // Respect current mode
+      const filtered = selectedConversationMessages
+        .filter(m => {
+          const isAssigned = isMessageAssigned(m);
+          return (selectionMode === 'UNMARKING') ? isAssigned : !isAssigned;
+        })
+        .map(m => m.id);
+      selectAll(filtered);
+    }
   };
 
   const handleSaveMapping = async (projectIds: string[]) => {
@@ -447,6 +507,53 @@ export function OmniInboxBoard({
       setIsMappingOpen(false);
     }
     setToastMessage(result.message || "Đã gán tin nhắn vào project.");
+    setSaving(false);
+  };
+
+  const handleUnmarkFromProject = async () => {
+    if (!selectedConversationId || selectedIds.size === 0) return;
+    const msgIds = Array.from(selectedIds);
+    const selectedMsgs = selectedConversationMessages.filter(m => msgIds.includes(m.id));
+    
+    setSaving(true);
+    let successCount = 0;
+    let failCount = 0;
+
+    for (const msg of selectedMsgs) {
+      // Get all associated project IDs
+      const pids = new Set<string>();
+      if (msg.projectIds) msg.projectIds.forEach(id => pids.add(String(id)));
+      if (msg.project) pids.add(String(msg.project.id));
+
+      for (const pid of Array.from(pids)) {
+        const res = await unmarkMessageFromProject(msg.id, pid);
+        if (res.ok) successCount++;
+        else failCount++;
+      }
+    }
+
+    if (successCount > 0) {
+      setMessagesByConversation((prev) => {
+        const current = prev[selectedConversationId] ?? [];
+        const updated = current.map((m) => {
+          if (msgIds.includes(m.id)) {
+            return { 
+              ...m, 
+              projectIds: [], // Clear local project IDs
+              project: undefined 
+            };
+          }
+          return m;
+        });
+        return { ...prev, [selectedConversationId]: updated };
+      });
+      clearAll();
+    }
+
+    setToastMessage(failCount === 0 
+      ? `Đã gỡ ${msgIds.length} tin nhắn khỏi project.` 
+      : `Đã gỡ ${successCount} quan hệ, thất bại ${failCount}.`
+    );
     setSaving(false);
   };
 
@@ -535,6 +642,13 @@ export function OmniInboxBoard({
               channel={channelFilter === "all" ? "email" : (channelFilter as MessageChannel)}
               isIgnored={ignoredConversations.has(selectedConversation.id)}
               isDetailsOpen={isDetailsOpen}
+              isAllSelected={selectedCount > 0 && selectedCount === selectedConversationMessages.filter(m => {
+                return (selectionMode === 'UNMARKING') ? isMessageAssigned(m) : !isMessageAssigned(m);
+              }).length}
+              onSelectAll={() => {
+                if (selectedCount > 0) clearAll();
+                else handleSelectAll(selectedConversationMessages.map(m => m.id));
+              }}
               onToggleIgnore={handleToggleIgnore}
               onToggleDetails={() => setIsDetailsOpen(!isDetailsOpen)}
             />
@@ -542,7 +656,7 @@ export function OmniInboxBoard({
 
             <div
               ref={messageListRef}
-              className="flex-1 overflow-y-auto px-6 py-4 flex flex-col-reverse relative custom-scrollbar"
+              className="flex-1 overflow-y-auto px-6 pt-4 pb-28 flex flex-col-reverse relative custom-scrollbar"
               style={{ overflowAnchor: "auto" }}
             >
               {hasMoreMessages && (
@@ -586,7 +700,7 @@ export function OmniInboxBoard({
                             <input
                               type="checkbox"
                               checked={isChecked}
-                              onChange={() => toggleSelection(msg.id)}
+                              onChange={() => handleToggleSelection(msg.id)}
                               className="w-4 h-4 rounded border-slate-300 text-violet-600 focus:ring-violet-500 cursor-pointer"
                             />
                           </div>
@@ -694,7 +808,13 @@ export function OmniInboxBoard({
               {selectedCount > 0 && (
                 <BulkActionBar 
                   selectedCount={selectedCount}
+                  isUnmarkingMode={selectionMode === 'UNMARKING'}
+                  totalAvailable={selectedConversationMessages.filter(m => {
+                    return (selectionMode === 'UNMARKING') ? isMessageAssigned(m) : !isMessageAssigned(m);
+                  }).length}
+                  onSelectAll={() => handleSelectAll(selectedConversationMessages.map((m) => m.id))}
                   onAssignToProject={() => setIsMappingOpen(true)}
+                  onUnmarkFromProject={handleUnmarkFromProject}
                   onClear={clearAll}
                 />
               )}
@@ -720,7 +840,7 @@ export function OmniInboxBoard({
             projects={localProjects}
             isSaving={saving}
             onClose={() => setIsMappingOpen(false)}
-            onRemoveMessage={(id) => toggleSelection(id)}
+            onRemoveMessage={(id) => handleToggleSelection(id)}
             onCreateProject={(code) => {
               const id = `proj-${Date.now()}`;
               setLocalProjects((prev) => [

@@ -5,15 +5,42 @@ import { Server, Power, Loader2, ChevronDown, CheckCircle2, AlertCircle, PlayCir
 import { useAiStore } from '../store/useAiStore';
 import { motion, AnimatePresence } from 'framer-motion';
 
-export default function OpenClawAiWidget() {
+interface OpenClawAiWidgetProps {
+  className?: string;
+}
+
+export default function OpenClawAiWidget({ className }: OpenClawAiWidgetProps) {
   const { aiStatus, wakingUp, connectWs, wakeupSession } = useAiStore();
   const [isHovered, setIsHovered] = useState(false);
+  const [dragPosition, setDragPosition] = useState({ x: 0, y: 0 });
+  const [isInitialized, setIsInitialized] = useState(false);
 
   useEffect(() => {
     // Connect WebSocket and get cleanup fn
     const cleanup = connectWs();
+    
+    // Load persisted position
+    try {
+      const saved = localStorage.getItem('ai_widget_pos');
+      if (saved) {
+        setDragPosition(JSON.parse(saved));
+      }
+    } catch (e) {
+      console.error('Failed to load AI widget position', e);
+    }
+    setIsInitialized(true);
+    
     return cleanup;
   }, [connectWs]);
+
+  const handleDragEnd = (_: any, info: { offset: { x: number; y: number } }) => {
+    const newPos = {
+      x: dragPosition.x + info.offset.x,
+      y: dragPosition.y + info.offset.y
+    };
+    setDragPosition(newPos);
+    localStorage.setItem('ai_widget_pos', JSON.stringify(newPos));
+  };
 
   const isReady = aiStatus === 'ready';
   const isStarting = aiStatus === 'starting' || wakingUp;
@@ -56,18 +83,25 @@ export default function OpenClawAiWidget() {
       break;
   }
 
+  if (!isInitialized) return null;
+
   return (
-    <div 
-      className="fixed top-4 right-4 z-[999]"
+    <motion.div 
+      drag
+      dragMomentum={false}
+      onDragEnd={handleDragEnd}
+      initial={dragPosition}
+      animate={{
+        x: dragPosition.x - (parseInt(typeof document !== 'undefined' ? getComputedStyle(document.documentElement).getPropertyValue('--ai-widget-offset') || '0' : '0')),
+        y: dragPosition.y
+      }}
+      className={`fixed bottom-3 right-6 z-[9999] cursor-grab active:cursor-grabbing ${className}`}
       onMouseEnter={() => setIsHovered(true)}
       onMouseLeave={() => setIsHovered(false)}
     >
       <div className="relative">
         {/* Compact Trigger Area */}
-        <motion.div 
-          className="flex items-center gap-2 p-1.5 pr-3 bg-white border border-slate-200 rounded-full shadow-lg shadow-slate-200/50 cursor-pointer hover:border-indigo-300 transition-all"
-          layout
-        >
+        <div className="flex items-center gap-2 p-1.5 pr-3 bg-white border border-slate-200 rounded-full shadow-lg shadow-slate-200/50 hover:border-indigo-300 transition-all">
           <div className="relative shrink-0">
             <div className="w-8 h-8 rounded-full bg-slate-50 border border-slate-100 flex items-center justify-center text-slate-500">
               <Server size={16} />
@@ -76,11 +110,11 @@ export default function OpenClawAiWidget() {
             <div className={`absolute -bottom-0.5 -right-0.5 w-3 h-3 rounded-full border-2 border-white ${dotColor} ${isStarting ? 'animate-pulse' : ''}`} />
           </div>
           
-          <div className="flex items-center gap-1">
-             <span className="text-[11px] font-bold text-slate-700 tracking-tight">AI Status</span>
-             <ChevronDown size={12} className={`text-slate-400 transition-transform ${isHovered ? 'rotate-180' : ''}`} />
+          <div className="flex items-center gap-1 overflow-hidden">
+             <span className="text-[11px] font-bold text-slate-700 tracking-tight whitespace-nowrap">AI Status</span>
+             <ChevronDown size={12} className={`text-slate-400 transition-transform flex-shrink-0 ${isHovered ? 'rotate-180' : ''}`} />
           </div>
-        </motion.div>
+        </div>
 
         {/* Popover */}
         <AnimatePresence>
@@ -89,7 +123,7 @@ export default function OpenClawAiWidget() {
               initial={{ opacity: 0, y: 10, scale: 0.95 }}
               animate={{ opacity: 1, y: 0, scale: 1 }}
               exit={{ opacity: 0, y: 10, scale: 0.95 }}
-              className="absolute top-full right-0 mt-3 w-64 bg-white border border-slate-100 rounded-2xl shadow-2xl p-4 overflow-hidden"
+              className="absolute bottom-full right-0 mb-3 w-64 bg-white border border-slate-100 rounded-2xl shadow-2xl p-4 overflow-hidden"
             >
               <div className="flex items-start gap-3">
                  <div className="mt-0.5">
@@ -123,6 +157,6 @@ export default function OpenClawAiWidget() {
           )}
         </AnimatePresence>
       </div>
-    </div>
+    </motion.div>
   );
 }

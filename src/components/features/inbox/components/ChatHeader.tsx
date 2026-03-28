@@ -1,8 +1,9 @@
 "use client";
 
-import { User, MoreVertical, BellOff, PanelRightClose, Ban, Activity } from "lucide-react";
+import { User, MoreVertical, BellOff, PanelRightClose, Ban, Activity, CheckCheck } from "lucide-react";
 import { InboxConversationSummary, MessageChannel } from "@/types/domain";
 import StatusBadge from "./StatusBadge";
+
 
 const CHANNEL_CONFIG: Record<MessageChannel, { color: string; label: string }> = {
   zalo: { color: "bg-blue-100 text-blue-700 border-blue-200", label: "Zalo" },
@@ -28,6 +29,8 @@ interface ChatHeaderProps {
   channel: MessageChannel;
   isIgnored: boolean;
   isDetailsOpen: boolean;
+  isAllSelected?: boolean;
+  onSelectAll?: () => void;
   onToggleIgnore: () => void;
   onToggleDetails: () => void;
 }
@@ -37,6 +40,8 @@ export function ChatHeader({
   channel,
   isIgnored,
   isDetailsOpen,
+  isAllSelected,
+  onSelectAll,
   onToggleIgnore,
   onToggleDetails,
 }: ChatHeaderProps) {
@@ -106,6 +111,21 @@ export function ChatHeader({
         <button title="Tắt thông báo" className="p-2 rounded-lg border border-transparent text-slate-400 hover:text-slate-700 hover:bg-slate-100 transition">
           <BellOff size={18} />
         </button>
+
+        {onSelectAll && (
+          <button
+            onClick={onSelectAll}
+            title={isAllSelected ? "Bỏ chọn tất cả" : "Chọn tất cả tin nhắn"}
+            className={`flex items-center gap-1.5 px-3 py-1.5 text-[12px] font-semibold transition-all border rounded-lg ${
+              isAllSelected
+                ? "bg-violet-600 border-violet-600 text-white shadow-sm"
+                : "bg-white border-slate-200 text-slate-600 hover:border-violet-300 hover:text-violet-600"
+            }`}
+          >
+            <CheckCheck size={16} />
+            {isAllSelected ? "Đã chọn hết" : "Chọn tất cả"}
+          </button>
+        )}
 
         <div className="w-px h-5 bg-slate-200 mx-1" />
 

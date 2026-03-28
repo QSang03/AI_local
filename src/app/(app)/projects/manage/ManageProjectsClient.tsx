@@ -200,7 +200,7 @@ export default function ManageProjectsClient({ initialProjects }: { initialProje
   }
 
   return (
-    <div className="space-y-6 px-2 py-6 md:px-6">
+    <div className="space-y-6 px-2 pt-6 pb-24 md:px-6">
       {/* Page Header */}
       <div className="flex flex-col items-start justify-between gap-4 xs:flex-row xs:items-center">
         <div className="flex items-center gap-3">
@@ -209,14 +209,16 @@ export default function ManageProjectsClient({ initialProjects }: { initialProje
             {total} project{total !== 1 ? 's' : ''}
           </span>
         </div>
-        <button
-          onClick={() => setShowCreate(true)}
-          className="inline-flex items-center gap-2 rounded-lg bg-indigo-600 px-4 py-2.5 text-white font-medium hover:bg-indigo-700 focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:ring-offset-2 transition-colors"
-          aria-label="Create new project"
-        >
-          <Plus size={18} />
-          <span>New Project</span>
-        </button>
+        <div className="flex items-center gap-4">
+          <button
+            onClick={() => setShowCreate(true)}
+            className="inline-flex items-center gap-2 rounded-lg bg-indigo-600 px-4 py-2.5 text-white font-medium hover:bg-indigo-700 focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:ring-offset-2 transition-colors"
+            aria-label="Create new project"
+          >
+            <Plus size={18} />
+            <span>New Project</span>
+          </button>
+        </div>
       </div>
 
       {/* Filter Bar */}

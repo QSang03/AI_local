@@ -1183,6 +1183,34 @@ export async function saveMessageProjectMapping(
   };
 }
 
+export async function unmarkMessageFromProject(
+  messageId: string,
+  projectId: string,
+): Promise<MutationResult> {
+  if (!USE_MOCK && API_BASE_URL) {
+    try {
+      await requestJson<MutationResult>(`/messages/${messageId}/mark/${projectId}`, {
+        method: "DELETE",
+      });
+      return {
+        ok: true,
+        message: "operation successful",
+      };
+    } catch {
+      return {
+        ok: false,
+        message: "Không thể gỡ mapping lúc này. Vui lòng thử lại.",
+      };
+    }
+  }
+
+  await delay(180);
+  return {
+    ok: true,
+    message: "Da go mapping trong mock mode.",
+  };
+}
+
 export async function addBlacklistEntry(
   payload: AddBlacklistPayload,
 ): Promise<MutationResult & { entry?: BlacklistEntry }> {

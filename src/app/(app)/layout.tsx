@@ -18,7 +18,6 @@ export default function AppLayout({
   
   return (
     <AuthBootstrap>
-      <OpenClawAiWidget />
       <div className="min-h-screen md:flex min-w-0 bg-[#F8FAFC]">
         <SideNav />
         <main 
@@ -32,6 +31,7 @@ export default function AppLayout({
             {children}
           </div>
         </main>
+        <OpenClawAiWidget />
       </div>
     </AuthBootstrap>
   );

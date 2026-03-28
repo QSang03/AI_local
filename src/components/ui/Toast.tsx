@@ -18,7 +18,10 @@ export function Toast({ message, onClose, actionLabel, onAction }: ToastProps) {
   if (!message) return null;
 
   return (
-    <div className="fixed bottom-6 right-6 z-50">
+    <div 
+      className="fixed bottom-[62px] z-[10000] transition-all duration-300"
+      style={{ right: `calc(1.5rem + var(--ai-widget-offset, 0px))` }}
+    >
       <div role="status" aria-live="polite" className="flex items-center gap-3 rounded-lg bg-slate-900 px-4 py-2 text-sm font-medium text-white shadow transform transition-all duration-200 ease-out motion-reduce:transition-none">
         <div className="min-w-0">{message}</div>
         {actionLabel && (
